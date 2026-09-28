@@ -1,0 +1,129 @@
+"use client";
+
+import { useCallback, useMemo, useState } from "react";
+import { foldDirectories } from "@/lib/graph/fold";
+import type { Selection } from "@/lib/graph/highlight";
+import { clampOffset, groupId, MAX_ROWS, rankGroupFiles } from "@/lib/graph/view";
+import type { Edge, ParsedFile } from "@/lib/parser/types";
+import { CategoryRail } from "./category-rail";
+import { DetailPane, type RepositoryFacts, type Tab } from "./detail-pane";
+import { DependencyMap } from "./map/dependency-map";
+import { Shell } from "./shell";
+
+// Owns what the map and the pane share: which folders are open, what's
+// selected, what's hovered, and which tab is showing. Everything either side
+// shows is derived from the parse output already in the browser, so nothing
+// here ever makes a request.
+export function AnalysisView({ files, edges, repository }: { files: ParsedFile[]; edges: Edge[]; repository: RepositoryFacts }) {
+  const folding = useMemo(() => foldDirectories(files), [files]);
+  const byPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files]);
+  const [open, setOpen] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const [refit, setRefit] = useState(0);
+  const [selection, setSelection] = useState<Selection>(null);
+  const [hover, setHover] = useState<Selection>(null);
+  // Held here rather than in the pane so it outlives every change of selection.
+  const [tab, setTab] = useState<Tab>("structure");
+
+  // Clicking a folded node is the one click it has, so opening it also selects
+  // the panel it becomes.
+  const openGroup = useCallback((id: string) => {
+    setOpen((prev) => new Map(prev).set(id, 0));
+    setRefit((n) => n + 1);
+    setSelection({ kind: "group", id });
+  }, []);
+
+  const closeGroup = useCallback(
+    (id: string) => {
+      setOpen((prev) => {
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
+      // A selection inside a folded-away panel has nothing left to point at.
+      setSelection((prev) => {
+        if (prev?.kind === "group") return prev.id === id ? null : prev;
+        if (prev?.kind === "file") {
+          const dir = folding.groupOf.get(prev.path);
+          return dir !== undefined && groupId(dir) === id ? null : prev;
+        }
+        return prev;
+      });
+    },
+    [folding],
+  );
+
+  const toggleFile = useCallback((path: string) => {
+    setSelection((prev) => (prev?.kind === "file" && prev.path === path ? null : { kind: "file", path }));
+  }, []);
+
+  const scroll = useCallback((id: string, offset: number) => {
+    setOpen((prev) => (prev.has(id) ? new Map(prev).set(id, Math.max(0, offset)) : prev));
+  }, []);
+
+  // A path clicked in the pane becomes the selection on the map, and the map
+  // shows it: its folder opens if it's folded, and scrolls if the row is
+  // outside the window. A folder that's already showing the row stays put.
+  const reveal = useCallback(
+    (path: string) => {
+      const dir = folding.groupOf.get(path);
+      const group = folding.groups.find((g) => g.dir === dir);
+      if (dir === undefined || !group) return;
+      const id = groupId(dir);
+      const ranked = rankGroupFiles(group, byPath);
+      const index = ranked.indexOf(path);
+      const current = open.get(id);
+      const first = current === undefined ? null : clampOffset(current, ranked.length);
+      if (first === null || index < first || index >= first + MAX_ROWS) {
+        setOpen(new Map(open).set(id, index - Math.floor(MAX_ROWS / 2)));
+        if (current === undefined) setRefit((n) => n + 1);
+      }
+      setSelection({ kind: "file", path });
+      // The row under the pointer is about to be replaced, and a removed
+      // element never reports the pointer leaving it.
+      setHover(null);
+    },
+    [folding, byPath, open],
+  );
+
+  const deselect = useCallback(() => setSelection(null), []);
+
+  return (
+    <Shell
+      rail={<CategoryRail paths={files.map((f) => f.path)} />}
+      map={
+        <div className="absolute inset-0">
+          <DependencyMap
+            files={files}
+            edges={edges}
+            folding={folding}
+            open={open}
+            selection={selection}
+            hover={hover}
+            refit={refit}
+            onOpen={openGroup}
+            onClose={closeGroup}
+            onSelectFile={toggleFile}
+            onScroll={scroll}
+            onHover={setHover}
+            onDeselect={deselect}
+          />
+        </div>
+      }
+      detail={
+        <DetailPane
+          files={files}
+          byPath={byPath}
+          edges={edges}
+          folding={folding}
+          repository={repository}
+          selection={selection}
+          hover={hover}
+          tab={tab}
+          onTab={setTab}
+          onReveal={reveal}
+          onHover={setHover}
+        />
+      }
+    />
+  );
+}

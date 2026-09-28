@@ -34,8 +34,8 @@ const clerkAppearance = {
     colorNeutral: "var(--fg)",
     colorBorder: "var(--line)",
     fontFamily: "var(--font-geist-sans)",
-    fontSize: "13px",
-    borderRadius: "4px",
+    fontSize: "0.8125rem",
+    borderRadius: "0.25rem",
   },
 };
 
