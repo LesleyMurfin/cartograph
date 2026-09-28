@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
+import { assertEnv } from "./lib/env";
 
-const nextConfig: NextConfig = {
-  /* config options here */
-};
+assertEnv();
+
+const nextConfig: NextConfig = {};
 
 export default nextConfig;
