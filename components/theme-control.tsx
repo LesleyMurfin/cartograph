@@ -20,7 +20,7 @@ export function ThemeControl({ initial }: { initial: Theme }) {
     <div
       role="radiogroup"
       aria-label="Theme"
-      className="flex h-6 items-center rounded border border-line text-[11px]"
+      className="flex h-6 items-center rounded border border-line text-[0.6875rem]"
     >
       {THEMES.map((t) => (
         <button
