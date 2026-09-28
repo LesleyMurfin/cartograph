@@ -1,4 +1,4 @@
-import { countByCategory } from "@/lib/graph/categories";
+import { categoryLabel, countByCategory } from "@/lib/graph/categories";
 import { CategorySwatch } from "./map/swatch";
 
 export function CategoryRail({ paths }: { paths: string[] }) {
@@ -11,7 +11,7 @@ export function CategoryRail({ paths }: { paths: string[] }) {
         {countByCategory(paths).map(({ category, count }) => (
           <li key={category} className="flex h-6 items-center gap-2 px-3 text-xs">
             <CategorySwatch category={category} />
-            <span className="flex-1 font-mono">.{category}</span>
+            <span className="flex-1 font-mono">{categoryLabel(category)}</span>
             <span className="text-fg-muted tabular-nums">{count}</span>
           </li>
         ))}

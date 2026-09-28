@@ -1,9 +1,16 @@
 // A file's category is its extension: a fact read off the path, not a guess
 // about what the file does. Role-based categories come from adapters later.
+const NO_EXTENSION = "(none)";
+
 export function categoryOf(path: string): string {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const dot = name.lastIndexOf(".");
-  return dot <= 0 ? "(none)" : name.slice(dot + 1);
+  return dot <= 0 ? NO_EXTENSION : name.slice(dot + 1);
+}
+
+// Extensions display with their dot; "no extension" isn't one, so it gets none.
+export function categoryLabel(category: string): string {
+  return category === NO_EXTENSION ? category : `.${category}`;
 }
 
 export function countByCategory(paths: readonly string[]): { category: string; count: number }[] {

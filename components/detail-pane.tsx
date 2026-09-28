@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, type ReactNode } from "react";
-import { categoryOf, countByCategory } from "@/lib/graph/categories";
+import { categoryLabel, categoryOf, countByCategory } from "@/lib/graph/categories";
 import { neighboursOf, rankRepository, type Neighbour, type Ranked } from "@/lib/graph/detail";
 import type { Folding } from "@/lib/graph/fold";
 import type { Selection } from "@/lib/graph/highlight";
@@ -249,7 +249,8 @@ function FileStructure({ file, edges, paths }: { file: ParsedFile; edges: Edge[]
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 border-b border-line px-3 py-2 text-[11px]">
         <Fact label="Kind">
           <span className="flex items-center gap-1.5 font-mono">
-            <CategorySwatch category={category} />.{category}
+            <CategorySwatch category={category} />
+            {categoryLabel(category)}
           </span>
         </Fact>
         <Fact label="Folder">
@@ -335,7 +336,7 @@ function GroupStructure({ files, fan }: { files: string[]; fan: { fanIn: number;
           {kinds.map(({ category, count }) => (
             <li key={category} className="flex h-[22px] items-center gap-2 px-3 text-[11px]">
               <CategorySwatch category={category} />
-              <span className="flex-1 font-mono">.{category}</span>
+              <span className="flex-1 font-mono">{categoryLabel(category)}</span>
               <span className="text-fg-muted tabular-nums">{count}</span>
             </li>
           ))}
