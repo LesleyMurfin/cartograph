@@ -1,7 +1,7 @@
 // The shape the parser writes. Everything built after the parser reads this,
 // so changing it means bumping SCHEMA_VERSION and updating the validator.
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export type EdgeKind = "import" | "re-export" | "dynamic-import";
 
@@ -20,6 +20,19 @@ export type ParsedFile = {
   fanIn: number;
   /** Distinct files this one imports. */
   fanOut: number;
+  /**
+   * How something other than an import reaches this file, from the adapter of
+   * the project it sits in: "Next.js page", "test file, …". Null when only an
+   * import would.
+   */
+  reachedBy: string | null;
+};
+
+/** The repository root, and every folder below it whose package.json a framework adapter detected. */
+export type Project = {
+  path: string;
+  /** The adapter that detected it. "none" is the fallback. */
+  adapter: string;
 };
 
 export type Edge = {
@@ -122,7 +135,8 @@ export type ParseResult = {
   schemaVersion: typeof SCHEMA_VERSION;
   /** Absolute path the parser was pointed at. */
   root: string;
-  adapter: string;
+  /** Root first, then in walk order. */
+  projects: Project[];
   files: ParsedFile[];
   edges: Edge[];
   coverage: Coverage;

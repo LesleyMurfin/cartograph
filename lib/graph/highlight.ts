@@ -1,4 +1,5 @@
 import type { Edge } from "../parser/types.ts";
+import { categoryOf } from "./categories.ts";
 import type { MapView } from "./view.ts";
 
 // What stays at full strength for a selection: the selected thing, its edges,
@@ -73,4 +74,26 @@ export function hoverEndpoint(view: MapView, hover: Selection): string | null {
   if (hover.kind === "group") return endpointKey(hover.id, null);
   const at = view.endpointOf.get(hover.path);
   return at ? endpointKey(at.object, at.handle) : null;
+}
+
+export type CategoryFocus = {
+  /** Endpoint keys standing for at least one file in the category. */
+  endpoints: ReadonlySet<string>;
+  /** Per canvas object, how many of its files are in the category. */
+  counts: ReadonlyMap<string, number>;
+};
+
+// What a rail category leaves bright. Every file is counted once, against
+// whatever stands for it on the canvas, so the objects' counts always add up
+// to the rail's.
+export function categoryFocus(view: MapView, category: string | null): CategoryFocus | null {
+  if (category === null) return null;
+  const endpoints = new Set<string>();
+  const counts = new Map<string, number>();
+  for (const [path, at] of view.endpointOf) {
+    if (categoryOf(path) !== category) continue;
+    endpoints.add(endpointKey(at.object, at.handle));
+    counts.set(at.object, (counts.get(at.object) ?? 0) + 1);
+  }
+  return { endpoints, counts };
 }

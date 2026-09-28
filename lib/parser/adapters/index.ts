@@ -1,11 +1,13 @@
+import { docusaurusAdapter } from "./docusaurus.ts";
 import { fallbackAdapter } from "./fallback.ts";
-import type { FrameworkAdapter } from "./types.ts";
+import { nextjsAdapter } from "./nextjs.ts";
+import type { FrameworkAdapter, ProjectInfo } from "./types.ts";
 
 // First match wins, so the fallback stays last.
-const ADAPTERS: readonly FrameworkAdapter[] = [fallbackAdapter];
+const ADAPTERS: readonly FrameworkAdapter[] = [nextjsAdapter, docusaurusAdapter, fallbackAdapter];
 
-export function selectAdapter(root: string): FrameworkAdapter {
-  return ADAPTERS.find((adapter) => adapter.detect(root)) ?? fallbackAdapter;
+export function selectAdapter(project: ProjectInfo): FrameworkAdapter {
+  return ADAPTERS.find((adapter) => adapter.detect(project)) ?? fallbackAdapter;
 }
 
-export type { FrameworkAdapter };
+export type { FrameworkAdapter, ProjectInfo };

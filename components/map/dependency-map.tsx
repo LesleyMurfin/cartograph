@@ -12,7 +12,13 @@ import {
 import "@xyflow/react/dist/base.css";
 import { useEffect, useMemo, useRef } from "react";
 import type { Folding } from "@/lib/graph/fold";
-import { highlight as highlightFor, hoverEndpoint, type Selection } from "@/lib/graph/highlight";
+import {
+  categoryFocus,
+  endpointKey,
+  highlight as highlightFor,
+  hoverEndpoint,
+  type Selection,
+} from "@/lib/graph/highlight";
 import { buildView } from "@/lib/graph/view";
 import type { Edge, ParsedFile } from "@/lib/parser/types";
 import { layout, type Box } from "./layout";
@@ -44,6 +50,8 @@ export type MapControl = {
   hover: Selection;
   /** Changes whenever an open should refit the view to the new layout. */
   refit: number;
+  /** The rail category left bright, or null for all of them. */
+  category: string | null;
   onOpen: (id: string) => void;
   onClose: (id: string) => void;
   onSelectFile: (path: string) => void;
@@ -68,6 +76,7 @@ function MapCanvas({
   selection,
   hover,
   refit,
+  category,
   onOpen,
   onClose,
   onSelectFile,
@@ -79,6 +88,7 @@ function MapCanvas({
   const boxes = useMemo(() => layout(view.objects, view.edges), [view]);
   const lit = useMemo(() => highlightFor(view, edges, selection), [view, edges, selection]);
   const hovered = useMemo(() => hoverEndpoint(view, hover), [view, hover]);
+  const focus = useMemo(() => categoryFocus(view, category), [view, category]);
 
   const nodes = useMemo(
     () =>
@@ -99,6 +109,10 @@ function MapCanvas({
         // Direction only gets colour once there's a selection for it to be
         // relative to: green flows into it, amber flows out of it.
         const stroke = lit?.incoming.has(e.id) ? "var(--incoming)" : lit?.outgoing.has(e.id) ? "var(--outgoing)" : undefined;
+        // Under a category, a line stays bright only when both of its ends do.
+        const outOfFocus =
+          focus !== null &&
+          !(focus.endpoints.has(endpointKey(e.source, e.sourceHandle)) && focus.endpoints.has(endpointKey(e.target, e.targetHandle)));
         (stroke ? bright : dim).push({
           id: e.id,
           source: e.source,
@@ -109,7 +123,7 @@ function MapCanvas({
             // Thickness says how many imports one line stands for, gently.
             strokeWidth: Math.min(2.5, 0.75 + Math.log2(e.count) / 3),
             stroke,
-            opacity: lit && !stroke ? 0.15 : 1,
+            opacity: (lit && !stroke) || outOfFocus ? 0.15 : 1,
           },
         });
       }
@@ -117,7 +131,7 @@ function MapCanvas({
       // not zIndex: a raised edge would also draw over the nodes.
       return [...dim, ...bright];
     },
-    [view, lit],
+    [view, lit, focus],
   );
 
   // Refit after an open, against the layout that open produced. The caller
@@ -139,7 +153,10 @@ function MapCanvas({
     () => ({ close: onClose, selectFile: onSelectFile, scroll: onScroll, hover: onHover }),
     [onClose, onSelectFile, onScroll, onHover],
   );
-  const selectionValue = useMemo(() => ({ selection, highlight: lit, hovered }), [selection, lit, hovered]);
+  const selectionValue = useMemo(
+    () => ({ selection, highlight: lit, hovered, focus, category }),
+    [selection, lit, hovered, focus, category],
+  );
 
   return (
     <MapActions.Provider value={actions}>

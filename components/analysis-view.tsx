@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { foldDirectories } from "@/lib/graph/fold";
 import type { Selection } from "@/lib/graph/highlight";
+import type { Direction } from "@/lib/graph/reach";
 import { clampOffset, groupId, MAX_ROWS, rankGroupFiles } from "@/lib/graph/view";
 import type { Edge, ParsedFile } from "@/lib/parser/types";
 import { CategoryRail } from "./category-rail";
@@ -10,8 +11,9 @@ import { DetailPane, type RepositoryFacts, type Tab } from "./detail-pane";
 import { DependencyMap } from "./map/dependency-map";
 import { Shell } from "./shell";
 
-// Owns what the map and the pane share: which folders are open, what's
-// selected, what's hovered, and which tab is showing. Everything either side
+// Owns what the map, the rail and the pane share: which folders are open,
+// what's selected, what's hovered, which category is picked, and what the pane
+// has open. Everything either side
 // shows is derived from the parse output already in the browser, so nothing
 // here ever makes a request.
 export function AnalysisView({ files, edges, repository }: { files: ParsedFile[]; edges: Edge[]; repository: RepositoryFacts }) {
@@ -23,6 +25,11 @@ export function AnalysisView({ files, edges, repository }: { files: ParsedFile[]
   const [hover, setHover] = useState<Selection>(null);
   // Held here rather than in the pane so it outlives every change of selection.
   const [tab, setTab] = useState<Tab>("structure");
+  // Likewise, so the same walk shows for each file while comparing them.
+  const [walk, setWalk] = useState<Direction | null>(null);
+  const [insightsOpen, setInsightsOpen] = useState(false);
+  const [category, setCategory] = useState<string | null>(null);
+  const toggleCategory = useCallback((c: string) => setCategory((prev) => (prev === c ? null : c)), []);
 
   // Clicking a folded node is the one click it has, so opening it also selects
   // the panel it becomes.
@@ -89,7 +96,7 @@ export function AnalysisView({ files, edges, repository }: { files: ParsedFile[]
 
   return (
     <Shell
-      rail={<CategoryRail paths={files.map((f) => f.path)} />}
+      rail={<CategoryRail paths={files.map((f) => f.path)} active={category} onToggle={toggleCategory} />}
       map={
         <div className="absolute inset-0">
           <DependencyMap
@@ -100,6 +107,7 @@ export function AnalysisView({ files, edges, repository }: { files: ParsedFile[]
             selection={selection}
             hover={hover}
             refit={refit}
+            category={category}
             onOpen={openGroup}
             onClose={closeGroup}
             onSelectFile={toggleFile}
@@ -120,6 +128,10 @@ export function AnalysisView({ files, edges, repository }: { files: ParsedFile[]
           hover={hover}
           tab={tab}
           onTab={setTab}
+          walk={walk}
+          onWalk={setWalk}
+          insightsOpen={insightsOpen}
+          onInsightsOpen={setInsightsOpen}
           onReveal={reveal}
           onHover={setHover}
         />

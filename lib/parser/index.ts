@@ -1,7 +1,6 @@
 import { statSync } from "node:fs";
 import path from "node:path";
 import { Project, ts } from "ts-morph";
-import { selectAdapter } from "./adapters/index.ts";
 import { extractImports } from "./extract.ts";
 import { dedupeEdges, fanCounts } from "./graph.ts";
 import { createResolver } from "./resolve.ts";
@@ -23,8 +22,7 @@ export function parseRepository(directory: string): ParseResult {
     throw new Error(`Not a directory: ${root}`);
   }
 
-  const adapter = selectAdapter(root);
-  const walk = walkRepository(root, adapter);
+  const walk = walkRepository(root);
 
   // Parsing only: no lib, no type resolution. Imports are resolved separately
   // so every outcome can be classified rather than left to the compiler.
@@ -131,6 +129,7 @@ export function parseRepository(directory: string): ParseResult {
       hash: candidate.hash,
       fanIn: fan.get(candidate.path)?.fanIn ?? 0,
       fanOut: fan.get(candidate.path)?.fanOut ?? 0,
+      reachedBy: candidate.reachedBy,
     }))
     .sort((a, b) => a.path.localeCompare(b.path));
 
@@ -141,7 +140,7 @@ export function parseRepository(directory: string): ParseResult {
   return {
     schemaVersion: SCHEMA_VERSION,
     root,
-    adapter: adapter.name,
+    projects: walk.projects,
     files,
     edges,
     coverage: {

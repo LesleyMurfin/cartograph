@@ -1,3 +1,4 @@
+import { toolConventions } from "./conventions.ts";
 import type { FrameworkAdapter } from "./types.ts";
 
 // Assumes no framework: applies to anything and excludes nothing beyond the
@@ -6,4 +7,5 @@ export const fallbackAdapter: FrameworkAdapter = {
   name: "none",
   detect: () => true,
   excludeDirectory: () => null,
+  reachedBy: toolConventions,
 };

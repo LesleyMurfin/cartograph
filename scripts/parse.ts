@@ -51,10 +51,15 @@ function printSummary(result: ParseResult, all: boolean): void {
   const { files, imports } = result.coverage;
   const modules = new Set(result.files.map((f) => f.module));
 
-  console.log(`${result.root}  (adapter: ${result.adapter})\n`);
+  console.log(`${result.root}\n`);
+  console.log(`Projects  ${result.projects.map((p) => `${p.path} (${p.adapter})`).join(", ")}`);
   console.log(`Files     found ${files.found}  parsed ${files.parsed}  skipped ${files.skipped}`);
   for (const file of files.skippedFiles) console.log(`  skipped ${file.path} — ${file.reason}: ${file.detail}`);
   console.log(`Folders   ${modules.size} distinct modules`);
+  const reached = result.files.filter((f) => f.reachedBy !== null);
+  const byReason = new Map<string, number>();
+  for (const f of reached) if (f.reachedBy) byReason.set(f.reachedBy, (byReason.get(f.reachedBy) ?? 0) + 1);
+  console.log(`Reached without an import  ${reached.length}${[...byReason].map(([r, n]) => `\n  ${n}  ${r}`).join("")}`);
   if (files.excludedDirectories.length) {
     console.log(`Not walked  ${files.excludedDirectories.map((d) => `${d.path} (${d.reason})`).join(", ")}`);
   }

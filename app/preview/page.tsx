@@ -18,7 +18,7 @@ export default async function PreviewPage() {
       cause: error,
     });
   });
-  const { root, adapter, files, edges, coverage } = deserializeParseResult(text);
+  const { root, projects, files, edges, coverage } = deserializeParseResult(text);
 
   // Only what the pane shows crosses to the browser, not the whole coverage
   // report or the absolute path the parser ran in.
@@ -28,7 +28,7 @@ export default async function PreviewPage() {
       edges={edges}
       repository={{
         name: path.basename(root),
-        adapter,
+        projects,
         skipped: coverage.files.skipped,
         unresolved: coverage.imports.total.unresolved,
       }}

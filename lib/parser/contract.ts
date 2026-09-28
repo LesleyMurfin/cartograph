@@ -9,6 +9,7 @@ import {
   type ExcludedReason,
   type ParseResult,
   type ParsedFile,
+  type Project,
   type SkippedFile,
   type SkipReason,
   type StatusCounts,
@@ -48,7 +49,7 @@ export function validateParseResult(value: unknown): ParseResult {
   const result: ParseResult = {
     schemaVersion,
     root: string(o.root, "$.root"),
-    adapter: string(o.adapter, "$.adapter"),
+    projects: array(o.projects, "$.projects", project),
     files: array(o.files, "$.files", parsedFile),
     edges: array(o.edges, "$.edges", edge),
     coverage: coverage(o.coverage, "$.coverage"),
@@ -61,6 +62,7 @@ export function validateParseResult(value: unknown): ParseResult {
     if (!paths.has(e.source)) throw new ContractError(`$.edges[${i}].source`, `${e.source} is not a file in the output`);
     if (!paths.has(e.target)) throw new ContractError(`$.edges[${i}].target`, `${e.target} is not a file in the output`);
   });
+  if (result.projects[0]?.path !== ".") throw new ContractError("$.projects[0].path", "the root must be the first project");
   const { found, parsed, skipped } = result.coverage.files;
   if (parsed !== result.files.length) throw new ContractError("$.coverage.files.parsed", `${parsed} but ${result.files.length} files listed`);
   if (found !== parsed + skipped) throw new ContractError("$.coverage.files.found", `${found} ≠ ${parsed} parsed + ${skipped} skipped`);
@@ -84,7 +86,13 @@ function parsedFile(value: unknown, at: string): ParsedFile {
     hash: string(o.hash, `${at}.hash`),
     fanIn: count(o.fanIn, `${at}.fanIn`),
     fanOut: count(o.fanOut, `${at}.fanOut`),
+    reachedBy: o.reachedBy === null ? null : string(o.reachedBy, `${at}.reachedBy`),
   };
+}
+
+function project(value: unknown, at: string): Project {
+  const o = object(value, at);
+  return { path: string(o.path, `${at}.path`), adapter: string(o.adapter, `${at}.adapter`) };
 }
 
 function edge(value: unknown, at: string): Edge {
