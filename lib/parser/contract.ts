@@ -1,3 +1,4 @@
+import { ROLE_IDS } from "../roles.ts";
 import {
   EDGE_KINDS,
   SCHEMA_VERSION,
@@ -7,13 +8,17 @@ import {
   type EdgeKind,
   type ExcludedDirectory,
   type ExcludedReason,
+  type OmittedRoute,
   type ParseResult,
   type ParsedFile,
+  type Project,
+  type Route,
   type SkippedFile,
   type SkipReason,
   type StatusCounts,
   type UnresolvedImport,
   type UnresolvedReason,
+  type WithheldRoutes,
 } from "./types.ts";
 
 // Reading the output file back goes through here, so a file written by an older
@@ -24,6 +29,7 @@ const SKIP_REASONS: readonly SkipReason[] = ["declaration-file", "too-large", "b
 const EXCLUDED_REASONS: readonly ExcludedReason[] = ["non-code-file", "declaration-file", "target-skipped", "in-excluded-directory"];
 const UNRESOLVED_REASONS: readonly UnresolvedReason[] = [
   "non-literal-dynamic-import",
+  "non-literal-require",
   "file-not-found",
   "directory-without-index",
   "alias-target-not-found",
@@ -48,9 +54,10 @@ export function validateParseResult(value: unknown): ParseResult {
   const result: ParseResult = {
     schemaVersion,
     root: string(o.root, "$.root"),
-    adapter: string(o.adapter, "$.adapter"),
+    projects: array(o.projects, "$.projects", project),
     files: array(o.files, "$.files", parsedFile),
     edges: array(o.edges, "$.edges", edge),
+    routes: array(o.routes, "$.routes", route),
     coverage: coverage(o.coverage, "$.coverage"),
     configs: array(o.configs, "$.configs", configReport),
   };
@@ -61,6 +68,10 @@ export function validateParseResult(value: unknown): ParseResult {
     if (!paths.has(e.source)) throw new ContractError(`$.edges[${i}].source`, `${e.source} is not a file in the output`);
     if (!paths.has(e.target)) throw new ContractError(`$.edges[${i}].target`, `${e.target} is not a file in the output`);
   });
+  result.routes.forEach((r, i) => {
+    if (!paths.has(r.file)) throw new ContractError(`$.routes[${i}].file`, `${r.file} is not a file in the output`);
+  });
+  if (result.projects[0]?.path !== ".") throw new ContractError("$.projects[0].path", "the root must be the first project");
   const { found, parsed, skipped } = result.coverage.files;
   if (parsed !== result.files.length) throw new ContractError("$.coverage.files.parsed", `${parsed} but ${result.files.length} files listed`);
   if (found !== parsed + skipped) throw new ContractError("$.coverage.files.found", `${found} ≠ ${parsed} parsed + ${skipped} skipped`);
@@ -84,7 +95,34 @@ function parsedFile(value: unknown, at: string): ParsedFile {
     hash: string(o.hash, `${at}.hash`),
     fanIn: count(o.fanIn, `${at}.fanIn`),
     fanOut: count(o.fanOut, `${at}.fanOut`),
+    reachedBy: o.reachedBy === null ? null : string(o.reachedBy, `${at}.reachedBy`),
+    role: o.role === null ? null : oneOf(o.role, `${at}.role`, ROLE_IDS),
+    exports: array(o.exports, `${at}.exports`, string),
   };
+}
+
+function route(value: unknown, at: string): Route {
+  const o = object(value, at);
+  const method = string(o.method, `${at}.method`);
+  if (!/^[A-Z]+$/.test(method)) throw new ContractError(`${at}.method`, `expected an upper-case method, got ${JSON.stringify(method)}`);
+  const pattern = string(o.pattern, `${at}.pattern`);
+  if (!pattern.startsWith("/")) throw new ContractError(`${at}.pattern`, `expected a pattern starting with /, got ${JSON.stringify(pattern)}`);
+  return { file: string(o.file, `${at}.file`), method, pattern, line: count(o.line, `${at}.line`) };
+}
+
+function omittedRoute(value: unknown, at: string): OmittedRoute {
+  const o = object(value, at);
+  return { file: string(o.file, `${at}.file`), line: count(o.line, `${at}.line`), reason: string(o.reason, `${at}.reason`) };
+}
+
+function withheldRoutes(value: unknown, at: string): WithheldRoutes {
+  const o = object(value, at);
+  return { project: string(o.project, `${at}.project`), reason: string(o.reason, `${at}.reason`) };
+}
+
+function project(value: unknown, at: string): Project {
+  const o = object(value, at);
+  return { path: string(o.path, `${at}.path`), adapter: string(o.adapter, `${at}.adapter`) };
 }
 
 function edge(value: unknown, at: string): Edge {
@@ -105,6 +143,7 @@ function coverage(value: unknown, at: string): Coverage {
   const imports = object(o.imports, `${at}.imports`);
   const byKind = object(imports.byKind, `${at}.imports.byKind`);
   const external = object(imports.external, `${at}.imports.external`);
+  const routes = object(o.routes, `${at}.routes`);
   return {
     files: {
       found: count(files.found, `${at}.files.found`),
@@ -119,6 +158,7 @@ function coverage(value: unknown, at: string): Coverage {
         import: statusCounts(byKind.import, `${at}.imports.byKind.import`),
         "re-export": statusCounts(byKind["re-export"], `${at}.imports.byKind.re-export`),
         "dynamic-import": statusCounts(byKind["dynamic-import"], `${at}.imports.byKind.dynamic-import`),
+        require: statusCounts(byKind.require, `${at}.imports.byKind.require`),
       },
       external: {
         package: count(external.package, `${at}.imports.external.package`),
@@ -128,6 +168,10 @@ function coverage(value: unknown, at: string): Coverage {
       excluded: countsKeyedBy(imports.excluded, `${at}.imports.excluded`, EXCLUDED_REASONS),
       unresolvedByReason: countsKeyedBy(imports.unresolvedByReason, `${at}.imports.unresolvedByReason`, UNRESOLVED_REASONS),
       unresolved: array(imports.unresolved, `${at}.imports.unresolved`, unresolvedImport),
+    },
+    routes: {
+      omitted: array(routes.omitted, `${at}.routes.omitted`, omittedRoute),
+      withheld: array(routes.withheld, `${at}.routes.withheld`, withheldRoutes),
     },
   };
 }

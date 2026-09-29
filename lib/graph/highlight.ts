@@ -74,3 +74,30 @@ export function hoverEndpoint(view: MapView, hover: Selection): string | null {
   const at = view.endpointOf.get(hover.path);
   return at ? endpointKey(at.object, at.handle) : null;
 }
+
+export type CategoryFocus = {
+  /** Endpoint keys standing for at least one file in the category. */
+  endpoints: ReadonlySet<string>;
+  /** Per canvas object, how many of its files are in the category. */
+  counts: ReadonlyMap<string, number>;
+};
+
+// What a rail category leaves bright. Every file is counted once, against
+// whatever stands for it on the canvas, so the objects' counts always add up
+// to the rail's.
+export function categoryFocus(
+  view: MapView,
+  category: string | null,
+  /** Each file's rail category. */
+  categoryOf: ReadonlyMap<string, string>,
+): CategoryFocus | null {
+  if (category === null) return null;
+  const endpoints = new Set<string>();
+  const counts = new Map<string, number>();
+  for (const [path, at] of view.endpointOf) {
+    if (categoryOf.get(path) !== category) continue;
+    endpoints.add(endpointKey(at.object, at.handle));
+    counts.set(at.object, (counts.get(at.object) ?? 0) + 1);
+  }
+  return { endpoints, counts };
+}

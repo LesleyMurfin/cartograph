@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import type { FrameworkAdapter } from "./adapters/types.ts";
-import type { ExcludedDirectory, SkippedFile } from "./types.ts";
+import { fallbackAdapter } from "./adapters/fallback.ts";
+import { selectAdapter, type FrameworkAdapter } from "./adapters/index.ts";
+import type { ExcludedDirectory, Project, SkippedFile } from "./types.ts";
 
 export const CODE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 const DECLARATION = /\.d\.(ts|mts|cts)$|\.d\.[^/.]+\.ts$/;
@@ -19,6 +20,9 @@ export type CandidateFile = {
   bytes: number;
   lines: number;
   hash: string;
+  reachedBy: string | null;
+  /** Path of the project the file belongs to. */
+  project: string;
 };
 
 export type WalkResult = {
@@ -29,7 +33,19 @@ export type WalkResult = {
   found: number;
   /** Package names declared by package.json files inside the repository. */
   workspacePackages: Set<string>;
+  projects: Project[];
+  /** Each project's adapter, by project path. */
+  adapters: Map<string, FrameworkAdapter>;
+  /** The project of every file found, parsed or skipped. */
+  projectOf: Map<string, string>;
 };
+
+type CurrentProject = { path: string; adapter: FrameworkAdapter };
+
+// Paths handed to an adapter are relative to its project.
+export function withinProject(project: string, relativePath: string): string {
+  return project === "." ? relativePath : relativePath.slice(project.length + 1);
+}
 
 export function toPosix(p: string): string {
   return p.split(path.sep).join("/");
@@ -62,30 +78,53 @@ function genericExclusion(name: string): string | null {
   return null;
 }
 
-export function walkRepository(root: string, adapter: FrameworkAdapter): WalkResult {
+export function walkRepository(root: string): WalkResult {
   const result: WalkResult = {
     candidates: [],
     skipped: [],
     excludedDirectories: [],
     found: 0,
     workspacePackages: new Set(),
+    projects: [],
+    adapters: new Map(),
+    projectOf: new Map(),
   };
 
-  const visit = (absoluteDir: string): void => {
+  const within = (project: CurrentProject, relativePath: string) => withinProject(project.path, relativePath);
+
+  const visit = (absoluteDir: string, parent: CurrentProject | null): void => {
     const entries = readdirSync(absoluteDir, { withFileTypes: true }).sort((a, b) =>
       a.name.localeCompare(b.name),
     );
+
+    // The root is always a project. Below it, a package.json starts one only
+    // when a framework is detected there; otherwise the folder stays in its
+    // parent's project and keeps its conventions.
+    let project = parent;
+    const manifest = entries.find((entry) => entry.isFile() && entry.name === "package.json");
+    if (!parent || manifest) {
+      const pkg = manifest ? readPackage(path.join(absoluteDir, manifest.name)) : null;
+      if (pkg?.name) result.workspacePackages.add(pkg.name);
+      const adapter = selectAdapter({ dir: absoluteDir, dependencies: pkg?.dependencies ?? new Set() });
+      if (!parent || adapter !== fallbackAdapter) {
+        project = { path: toPosix(path.relative(root, absoluteDir)) || ".", adapter };
+        result.projects.push({ path: project.path, adapter: adapter.name });
+        result.adapters.set(project.path, adapter);
+      }
+    }
+    if (!project) throw new Error(`No project for ${absoluteDir}`);
+
     for (const entry of entries) {
       const absolutePath = path.join(absoluteDir, entry.name);
       const relativePath = toPosix(path.relative(root, absolutePath));
 
       if (entry.isDirectory()) {
-        const reason = genericExclusion(entry.name) ?? adapter.excludeDirectory(relativePath);
+        const reason = genericExclusion(entry.name) ?? project.adapter.excludeDirectory(within(project, relativePath));
         if (reason) {
           result.excludedDirectories.push({ path: relativePath, reason });
           continue;
         }
-        visit(absolutePath);
+        visit(absolutePath, project);
         continue;
       }
 
@@ -96,34 +135,28 @@ export function walkRepository(root: string, adapter: FrameworkAdapter): WalkRes
           result.excludedDirectories.push({ path: relativePath, reason: "symbolic link" });
         } else if (isCodeFile(entry.name)) {
           result.found++;
+          result.projectOf.set(relativePath, project.path);
           result.skipped.push({ path: relativePath, reason: "symlink", detail: "symbolic link not followed" });
         }
         continue;
       }
 
-      if (!entry.isFile()) continue;
-
-      if (entry.name === "package.json") {
-        const name = readPackageName(absolutePath);
-        if (name) result.workspacePackages.add(name);
-        continue;
-      }
-
-      if (!isCodeFile(entry.name)) continue;
+      if (!entry.isFile() || !isCodeFile(entry.name)) continue;
       result.found++;
+      result.projectOf.set(relativePath, project.path);
 
       if (isDeclarationFile(entry.name)) {
         result.skipped.push({ path: relativePath, reason: "declaration-file", detail: "types only, no runtime imports" });
         continue;
       }
 
-      const candidate = readCandidate(absolutePath, relativePath);
+      const candidate = readCandidate(absolutePath, relativePath, project.path, project.adapter.reachedBy(within(project, relativePath)));
       if ("reason" in candidate) result.skipped.push(candidate);
       else result.candidates.push(candidate);
     }
   };
 
-  visit(root);
+  visit(root, null);
   return result;
 }
 
@@ -133,19 +166,30 @@ function safeStat(absolutePath: string): "directory" | "file" | "missing" {
   return stat.isDirectory() ? "directory" : "file";
 }
 
-function readPackageName(absolutePath: string): string | null {
+function readPackage(absolutePath: string): { name: string | null; dependencies: Set<string> } | null {
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(absolutePath, "utf8"));
-    if (typeof parsed === "object" && parsed !== null && "name" in parsed && typeof parsed.name === "string") {
-      return parsed.name;
-    }
+    parsed = JSON.parse(readFileSync(absolutePath, "utf8"));
   } catch {
     // An unreadable package.json declares nothing; it isn't a code file, so it isn't counted.
+    return null;
   }
-  return null;
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const dependencies = new Set<string>();
+  for (const field of ["dependencies", "devDependencies"]) {
+    const block: unknown = field in parsed ? Reflect.get(parsed, field) : undefined;
+    if (typeof block === "object" && block !== null) for (const name of Object.keys(block)) dependencies.add(name);
+  }
+  const name = "name" in parsed && typeof parsed.name === "string" ? parsed.name : null;
+  return { name, dependencies };
 }
 
-function readCandidate(absolutePath: string, relativePath: string): CandidateFile | SkippedFile {
+function readCandidate(
+  absolutePath: string,
+  relativePath: string,
+  project: string,
+  reachedBy: string | null,
+): CandidateFile | SkippedFile {
   let buffer: Buffer;
   try {
     buffer = readFileSync(absolutePath);
@@ -171,5 +215,7 @@ function readCandidate(absolutePath: string, relativePath: string): CandidateFil
     bytes: buffer.byteLength,
     lines: countLines(content),
     hash: createHash("sha256").update(buffer).digest("hex"),
+    reachedBy,
+    project,
   };
 }

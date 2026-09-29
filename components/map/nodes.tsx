@@ -3,7 +3,7 @@
 import { Handle, Position, useUpdateNodeInternals, type Node, type NodeProps } from "@xyflow/react";
 import { createContext, useContext, useEffect, useRef, type WheelEvent } from "react";
 import { categoryOf } from "@/lib/graph/categories";
-import { endpointKey, type Highlight, type Selection } from "@/lib/graph/highlight";
+import { endpointKey, type CategoryFocus, type Highlight, type Selection } from "@/lib/graph/highlight";
 import { ABOVE_HANDLE, BELOW_HANDLE, MAX_ROWS, type FoldedObject, type PanelObject } from "@/lib/graph/view";
 import { PANEL_HEADER_HEIGHT, PAD_X, ROW_HEIGHT } from "./layout";
 import { CategorySwatch } from "./swatch";
@@ -30,7 +30,10 @@ export const MapSelection = createContext<{
   highlight: Highlight | null;
   /** Endpoint key of what's hovered, here or in the pane. */
   hovered: string | null;
-}>({ selection: null, highlight: null, hovered: null });
+  /** What the rail's category leaves bright, and how many files matched in each object. */
+  focus: CategoryFocus | null;
+  category: string | null;
+}>({ selection: null, highlight: null, hovered: null, focus: null, category: null });
 
 const DIM = "opacity-25";
 // Hover is marked with an outline rather than a fill, so it reads the same on
@@ -46,10 +49,11 @@ const anchor = "!size-px !min-h-0 !min-w-0 !border-0 !bg-transparent";
 
 export function FoldedNodeView({ id, data }: NodeProps<FoldedNode>) {
   const { hover } = useContext(MapActions);
-  const { highlight, hovered } = useContext(MapSelection);
+  const { highlight, hovered, focus, category } = useContext(MapSelection);
   const key = endpointKey(id, null);
   const isHovered = hovered === key;
-  const dim = highlight !== null && !highlight.endpoints.has(key) && !isHovered;
+  const dim =
+    !isHovered && ((highlight !== null && !highlight.endpoints.has(key)) || (focus !== null && !focus.endpoints.has(key)));
   return (
     <div
       title={data.dir}
@@ -62,7 +66,12 @@ export function FoldedNodeView({ id, data }: NodeProps<FoldedNode>) {
     >
       <Handle type="target" position={Position.Left} className={anchor} isConnectable={false} />
       <span className="truncate font-mono text-[11px] leading-[16px] text-fg">{data.label}</span>
-      <Meta fileCount={data.fileCount} fanIn={data.fanIn} fanOut={data.fanOut} />
+      <Meta
+        fileCount={data.fileCount}
+        fanIn={data.fanIn}
+        fanOut={data.fanOut}
+        match={category === null ? null : { category, count: focus?.counts.get(id) ?? 0 }}
+      />
       <Handle type="source" position={Position.Right} className={anchor} isConnectable={false} />
     </div>
   );
@@ -70,13 +79,15 @@ export function FoldedNodeView({ id, data }: NodeProps<FoldedNode>) {
 
 export function PanelNodeView({ id, data }: NodeProps<PanelNode>) {
   const { close, selectFile, scroll, hover } = useContext(MapActions);
-  const { selection, highlight, hovered } = useContext(MapSelection);
+  const { selection, highlight, hovered, focus, category } = useContext(MapSelection);
   const selected = selection?.kind === "group" && selection.id === id;
   // Whole means every row stays bright: nothing is selected, or this panel is.
   const whole = highlight === null || highlight.objects.has(id);
-  const lit = (handle: string) => whole || (highlight?.endpoints.has(endpointKey(id, handle)) ?? false);
-  const anyLit =
-    whole || data.rows.some((r) => lit(r.path)) || (data.scrolls && (lit(ABOVE_HANDLE) || lit(BELOW_HANDLE)));
+  // A row is bright when the selection and the rail's category both leave it so.
+  const lit = (handle: string) =>
+    (whole || (highlight?.endpoints.has(endpointKey(id, handle)) ?? false)) &&
+    (focus === null || focus.endpoints.has(endpointKey(id, handle)));
+  const anyLit = data.rows.some((r) => lit(r.path)) || (data.scrolls && (lit(ABOVE_HANDLE) || lit(BELOW_HANDLE)));
 
   // Wheel deltas arrive in pixels from trackpads and in lines from some mice;
   // they add up until they make a whole row, so slow scrolling still moves.
@@ -113,7 +124,12 @@ export function PanelNodeView({ id, data }: NodeProps<PanelNode>) {
         style={{ height: PANEL_HEADER_HEIGHT, paddingInline: PAD_X }}
       >
         <span className="truncate font-mono text-[11px] leading-[16px] font-semibold text-fg">{data.label}</span>
-        <Meta fileCount={data.fileCount} fanIn={data.fanIn} fanOut={data.fanOut} />
+        <Meta
+          fileCount={data.fileCount}
+          fanIn={data.fanIn}
+          fanOut={data.fanOut}
+          match={category === null ? null : { category, count: focus?.counts.get(id) ?? 0 }}
+        />
       </button>
       {/* nowheel: the wheel scrolls the rows here instead of zooming the map. */}
       <ul className={data.scrolls ? "nowheel" : undefined} onWheel={onWheel}>
@@ -198,12 +214,28 @@ function OffscreenRow(props: {
   );
 }
 
-function Meta({ fileCount, fanIn, fanOut }: { fileCount: number; fanIn: number; fanOut: number }) {
+// Under a rail category the file count says how many of them matched, so each
+// part of the repository shows how much of the category lives in it.
+function Meta(props: {
+  fileCount: number;
+  fanIn: number;
+  fanOut: number;
+  match: { category: string; count: number } | null;
+}) {
+  const { fileCount, fanIn, fanOut, match } = props;
   return (
     <span className="flex items-center gap-[8px] text-[10px] leading-[12px] text-fg-muted tabular-nums">
-      <span>
-        {fileCount} {fileCount === 1 ? "file" : "files"}
-      </span>
+      {match ? (
+        <span className="flex items-center gap-[4px]" title={`${match.count} of ${fileCount} files match`}>
+          <span>
+            <span className="text-fg">{match.count}</span>/{fileCount} {fileCount === 1 ? "file" : "files"}
+          </span>
+        </span>
+      ) : (
+        <span>
+          {fileCount} {fileCount === 1 ? "file" : "files"}
+        </span>
+      )}
       <Fan fanIn={fanIn} fanOut={fanOut} />
     </span>
   );

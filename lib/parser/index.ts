@@ -1,8 +1,7 @@
 import { statSync } from "node:fs";
 import path from "node:path";
 import { Project, ts } from "ts-morph";
-import { selectAdapter } from "./adapters/index.ts";
-import { extractImports } from "./extract.ts";
+import { extractExports, extractImports } from "./extract.ts";
 import { dedupeEdges, fanCounts } from "./graph.ts";
 import { createResolver } from "./resolve.ts";
 import {
@@ -12,19 +11,31 @@ import {
   type ImportStatus,
   type ParseResult,
   type ParsedFile,
+  type Route,
   type SkippedFile,
   type StatusCounts,
 } from "./types.ts";
-import { walkRepository } from "./walk.ts";
+import type { Role } from "../roles.ts";
+import type { AdapterFile } from "./adapters/types.ts";
+import { walkRepository, withinProject, type WalkResult } from "./walk.ts";
+
+export type Selection = { root: string; walk: WalkResult };
 
 export function parseRepository(directory: string): ParseResult {
+  return parseSelection(selectFiles(directory));
+}
+
+// Selecting and parsing are separate calls so a caller can report which one
+// it's in; together they are exactly parseRepository.
+export function selectFiles(directory: string): Selection {
   const root = path.resolve(directory);
   if (!statSync(root, { throwIfNoEntry: false })?.isDirectory()) {
     throw new Error(`Not a directory: ${root}`);
   }
+  return { root, walk: walkRepository(root) };
+}
 
-  const adapter = selectAdapter(root);
-  const walk = walkRepository(root, adapter);
+export function parseSelection({ root, walk }: Selection): ParseResult {
 
   // Parsing only: no lib, no type resolution. Imports are resolved separately
   // so every outcome can be classified rather than left to the compiler.
@@ -67,20 +78,26 @@ export function parseRepository(directory: string): ParseResult {
 
   const coverage: Coverage["imports"] = {
     total: emptyCounts(),
-    byKind: { import: emptyCounts(), "re-export": emptyCounts(), "dynamic-import": emptyCounts() },
+    byKind: { import: emptyCounts(), "re-export": emptyCounts(), "dynamic-import": emptyCounts(), require: emptyCounts() },
     external: { package: 0, builtin: 0, "outside-root": 0 },
     excluded: {},
     unresolvedByReason: {},
     unresolved: [],
   };
   const rawEdges: Edge[] = [];
+  const exportsOf = new Map<string, string[]>();
 
   for (const { candidate, sourceFile } of parsed) {
+    exportsOf.set(candidate.path, extractExports(sourceFile));
     for (const found of extractImports(sourceFile)) {
       const specifier = found.literal ? found.specifier : found.expression;
       const outcome: ImportStatus = found.literal
         ? resolver.resolve(candidate.absolutePath, found.specifier, found.kind)
-        : { status: "unresolved", reason: "non-literal-dynamic-import", detail: "the path is computed at runtime" };
+        : {
+            status: "unresolved",
+            reason: found.kind === "require" ? "non-literal-require" : "non-literal-dynamic-import",
+            detail: "the path is computed at runtime",
+          };
 
       coverage.total.seen++;
       coverage.byKind[found.kind].seen++;
@@ -122,6 +139,7 @@ export function parseRepository(directory: string): ParseResult {
   const edges = dedupeEdges(rawEdges);
   const paths = parsed.map((entry) => entry.candidate.path);
   const fan = fanCounts(paths, edges);
+  const conventions = applyAdapters(walk, parsed, skipped);
   const files: ParsedFile[] = parsed
     .map(({ candidate }) => ({
       path: candidate.path,
@@ -131,6 +149,9 @@ export function parseRepository(directory: string): ParseResult {
       hash: candidate.hash,
       fanIn: fan.get(candidate.path)?.fanIn ?? 0,
       fanOut: fan.get(candidate.path)?.fanOut ?? 0,
+      reachedBy: candidate.reachedBy,
+      role: conventions.roles.get(candidate.path) ?? null,
+      exports: exportsOf.get(candidate.path) ?? [],
     }))
     .sort((a, b) => a.path.localeCompare(b.path));
 
@@ -141,9 +162,10 @@ export function parseRepository(directory: string): ParseResult {
   return {
     schemaVersion: SCHEMA_VERSION,
     root,
-    adapter: adapter.name,
+    projects: walk.projects,
     files,
     edges,
+    routes: conventions.routes,
     coverage: {
       files: {
         found: walk.found,
@@ -153,8 +175,57 @@ export function parseRepository(directory: string): ParseResult {
         excludedDirectories: walk.excludedDirectories,
       },
       imports: coverage,
+      routes: { omitted: conventions.omitted, withheld: conventions.withheld },
     },
     configs: resolver.configs(),
+  };
+}
+
+// Each project's adapter is asked about its own files, by project-relative
+// path, and what it answers is mapped back to repository paths.
+function applyAdapters(
+  walk: WalkResult,
+  parsed: readonly { candidate: { path: string; project: string }; sourceFile: AdapterFile["source"] }[],
+  skipped: readonly SkippedFile[],
+) {
+  const roles = new Map<string, Role>();
+  const routes: Route[] = [];
+  const omitted: Coverage["routes"]["omitted"] = [];
+  const withheld: Coverage["routes"]["withheld"] = [];
+
+  for (const [project, adapter] of walk.adapters) {
+    const toRepo = (p: string) => (project === "." ? p : `${project}/${p}`);
+    const files: AdapterFile[] = [];
+    for (const { candidate, sourceFile } of parsed) {
+      if (candidate.project !== project) continue;
+      const file = { path: withinProject(project, candidate.path), source: sourceFile };
+      files.push(file);
+      const role = adapter.roleOf(file);
+      if (role) roles.set(candidate.path, role);
+    }
+    // A declaration file has no runtime code, so it can't hold anything an adapter reads.
+    const unparsed = skipped
+      .filter((f) => f.reason !== "declaration-file" && walk.projectOf.get(f.path) === project)
+      .map((f) => withinProject(project, f.path));
+
+    const report = adapter.routes({ files, unparsed });
+    if (report.withheld !== null) {
+      withheld.push({ project, reason: report.withheld });
+      continue;
+    }
+    for (const r of report.routes) routes.push({ file: toRepo(r.path), method: r.method, pattern: r.pattern, line: r.line });
+    for (const o of report.omitted) omitted.push({ file: toRepo(o.path), line: o.line, reason: o.reason });
+  }
+
+  // An array of paths on a decorator can name the same one twice.
+  const unique = new Map(routes.map((r) => [`${r.method} ${r.pattern} ${r.file}`, r]));
+  return {
+    roles,
+    routes: [...unique.values()].sort(
+      (a, b) => a.pattern.localeCompare(b.pattern) || a.method.localeCompare(b.method) || a.file.localeCompare(b.file),
+    ),
+    omitted: omitted.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line),
+    withheld,
   };
 }
 
