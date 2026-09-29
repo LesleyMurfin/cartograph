@@ -1,4 +1,4 @@
-import { railCategories, railLabel, type RailKey } from "@/lib/roles";
+import { railCategories, railLabel, type ModelRole, type RailKey } from "@/lib/roles";
 import type { ParsedFile } from "@/lib/parser/types";
 
 // The categories are the roles the repository's frameworks define, in the
@@ -8,11 +8,14 @@ import type { ParsedFile } from "@/lib/parser/types";
 // screen. Clicking it again, or another one, moves on.
 export function CategoryRail({
   files,
+  modelRoles,
   frameworks,
   active,
   onToggle,
 }: {
   files: ParsedFile[];
+  /** Roles the model gave files convention left unclassified; they count in their role's row. */
+  modelRoles: ReadonlyMap<string, ModelRole>;
   /** The adapter of every project in the repository. */
   frameworks: string[];
   active: string | null;
@@ -20,7 +23,7 @@ export function CategoryRail({
 }) {
   const categories = railCategories(
     frameworks,
-    files.map((f) => f.role),
+    files.map((f) => f.role ?? modelRoles.get(f.path) ?? null),
   );
   return (
     <div className="py-2">

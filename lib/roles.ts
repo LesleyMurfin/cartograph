@@ -26,6 +26,7 @@ export const ROLES = [
   { id: "repository", label: "Repositories" },
   { id: "component", label: "Components" },
   { id: "hook", label: "Hooks" },
+  { id: "util", label: "Utilities" },
   { id: "theme-override", label: "Theme overrides" },
   // Plumbing
   { id: "middleware", label: "Middleware" },
@@ -42,6 +43,19 @@ export const ROLES = [
 export type Role = (typeof ROLES)[number]["id"];
 
 export const ROLE_IDS: readonly Role[] = ROLES.map((r) => r.id);
+
+/**
+ * The only roles a model may give a file no convention identified. None of
+ * them is routable: page routes, endpoints, routers and controllers decide the
+ * route table and which files read as entry points, and convention owns them.
+ * The database refuses a model role outside this list.
+ */
+export const MODEL_ROLES = ["service", "repository", "model", "util", "config", "component", "hook"] as const satisfies readonly Role[];
+export type ModelRole = (typeof MODEL_ROLES)[number];
+
+export function isModelRole(value: string): value is ModelRole {
+  return (MODEL_ROLES as readonly string[]).includes(value);
+}
 
 // Whatever the framework, tools load their config by name and test runners
 // collect files by pattern.
@@ -97,8 +111,9 @@ export function railCategories(frameworks: readonly string[], roles: readonly (R
     const key = r ?? UNCLASSIFIED;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
-  // A role outside the frameworks' lists can only come from a mismatch
-  // between an adapter and this table. Showing it beats dropping its files.
+  // A role outside the frameworks' lists comes from the model labelling a file
+  // convention couldn't, or from a mismatch between an adapter and this
+  // table. Either way, showing it beats dropping its files.
   for (const key of counts.keys()) if (key !== UNCLASSIFIED) possible.add(key);
   return [
     ...ROLE_IDS.filter((r) => possible.has(r)).map((key) => ({ key, count: counts.get(key) ?? 0 })),
