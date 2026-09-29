@@ -8,6 +8,11 @@ export type Repository = { owner: string; name: string };
 // hand a huge repository to, so the limit is stated rather than engineered round.
 export const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024;
 
+// A hung request would otherwise hold the run in its stage until it goes stale.
+// The archive's limit covers streaming the whole body, so it's far longer.
+const API_TIMEOUT_MS = 15_000;
+const ARCHIVE_TIMEOUT_MS = 5 * 60_000;
+
 // The message is written for the person who pasted the URL, and is what the
 // failed row shows.
 export class PipelineError extends Error {
@@ -49,11 +54,14 @@ export function parseRepositoryUrl(input: string): Repository {
 // so the recorded sha is the code that was parsed, not whatever HEAD became
 // while the download ran. Unauthenticated: no token is asked for or stored.
 export async function resolveHeadCommit({ owner, name }: Repository): Promise<string> {
-  const response = await fetch(`https://api.github.com/repos/${owner}/${name}/commits/HEAD`, {
-    headers: { Accept: "application/vnd.github.sha", "User-Agent": "cartograph" },
-  });
+  const response = await withTimeout(`Asking GitHub for ${owner}/${name}'s latest commit`, API_TIMEOUT_MS, () =>
+    fetch(`https://api.github.com/repos/${owner}/${name}/commits/HEAD`, {
+      headers: { Accept: "application/vnd.github.sha", "User-Agent": "cartograph" },
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    }),
+  );
   if (response.ok) {
-    const sha = (await response.text()).trim();
+    const sha = (await withTimeout(`Asking GitHub for ${owner}/${name}'s latest commit`, API_TIMEOUT_MS, () => response.text())).trim();
     if (!/^[0-9a-f]{40}$/.test(sha)) throw new PipelineError(`GitHub returned an unexpected commit for ${owner}/${name}`);
     return sha;
   }
@@ -75,9 +83,12 @@ export async function resolveHeadCommit({ owner, name }: Repository): Promise<st
 // "<owner>-<name>-<sha>/" wrapper folder. tar refuses absolute paths and "..",
 // so nothing lands outside it.
 export async function downloadArchive({ owner, name }: Repository, sha: string, directory: string): Promise<number> {
-  const response = await fetch(`https://codeload.github.com/${owner}/${name}/tar.gz/${sha}`, {
-    headers: { "User-Agent": "cartograph" },
-  });
+  const what = `Downloading the archive for ${owner}/${name}`;
+  // One signal for the request and the body, so the limit is on the whole download.
+  const signal = AbortSignal.timeout(ARCHIVE_TIMEOUT_MS);
+  const response = await withTimeout(what, ARCHIVE_TIMEOUT_MS, () =>
+    fetch(`https://codeload.github.com/${owner}/${name}/tar.gz/${sha}`, { headers: { "User-Agent": "cartograph" }, signal }),
+  );
   if (!response.ok || !response.body) {
     throw new PipelineError(`Downloading the archive for ${owner}/${name} failed: GitHub answered ${response.status}`);
   }
@@ -92,8 +103,21 @@ export async function downloadArchive({ owner, name }: Repository, sha: string, 
       done(received > MAX_ARCHIVE_BYTES ? tooLarge(owner, name) : null, chunk);
     },
   });
-  await pipeline(Readable.from(chunks(response.body)), limit, extract({ cwd: directory, strip: 1 }));
+  const body = response.body;
+  await withTimeout(what, ARCHIVE_TIMEOUT_MS, () => pipeline(Readable.from(chunks(body)), limit, extract({ cwd: directory, strip: 1 })));
   return received;
+}
+
+// An aborted fetch throws a bare "TimeoutError"; the failed row should say what timed out.
+async function withTimeout<T>(what: string, ms: number, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new PipelineError(`${what} took longer than ${ms / 1000} seconds, so it was stopped`, { cause: error });
+    }
+    throw error;
+  }
 }
 
 // Read through the reader rather than Readable.fromWeb: the app's DOM types

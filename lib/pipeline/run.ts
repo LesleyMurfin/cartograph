@@ -16,7 +16,16 @@ export class AlreadyRunningError extends Error {
   override name = "AlreadyRunningError";
 }
 
-export type ClaimedRun = { analysisId: string; organizationId: string; repository: Repository };
+export class SupersededError extends Error {
+  override name = "SupersededError";
+}
+
+/**
+ * claimedStartedAt is this run's own claim on the row. Every later write is
+ * scoped to it, so a stale run that was taken over can't change the row the
+ * newer run now owns.
+ */
+export type ClaimedRun = { analysisId: string; organizationId: string; repository: Repository; claimedStartedAt: string };
 
 export async function runAnalysis(db: Db, analysisId: string): Promise<void> {
   await continueRun(db, await claimAnalysis(db, analysisId));
@@ -24,34 +33,35 @@ export async function runAnalysis(db: Db, analysisId: string): Promise<void> {
 
 // Everything after the claim. Any failure, in any stage, ends with the row
 // marked failed with its reason, in the stage it happened in.
-export async function continueRun(db: Db, { analysisId, organizationId, repository }: ClaimedRun): Promise<void> {
+export async function continueRun(db: Db, claimed: ClaimedRun): Promise<void> {
+  const { analysisId, organizationId, repository } = claimed;
   let workdir: string | null = null;
   try {
     workdir = await mkdtemp(path.join(tmpdir(), "cartograph-"));
-    await enter(db, analysisId, "fetch", `Resolving the latest commit of ${repository.owner}/${repository.name}`);
+    await enter(db, claimed, "fetch", `Resolving the latest commit of ${repository.owner}/${repository.name}`);
     const sha = await resolveHeadCommit(repository);
-    await update(db, analysisId, {
+    await update(db, claimed, {
       commit_sha: sha,
       stage_message: `Downloading ${repository.owner}/${repository.name} at ${sha.slice(0, 7)}`,
     });
     await downloadArchive(repository, sha, workdir);
 
-    await enter(db, analysisId, "select", "Walking the repository for TypeScript and JavaScript files");
+    await enter(db, claimed, "select", "Walking the repository for TypeScript and JavaScript files");
     const selection = selectFiles(workdir);
 
     const { candidates, skipped } = selection.walk;
-    await enter(db, analysisId, "parse", `Parsing ${count(candidates.length, "file")}${skipped.length ? `, ${skipped.length} skipped` : ""}`);
+    await enter(db, claimed, "parse", `Parsing ${count(candidates.length, "file")}${skipped.length ? `, ${skipped.length} skipped` : ""}`);
     const result = parseSelection(selection);
 
     await enter(
       db,
-      analysisId,
+      claimed,
       "store",
       `Storing ${count(result.coverage.files.found, "file")}, ${count(result.edges.length, "edge")} and ${count(result.routes.length, "route")}`,
     );
     await storeResult(db, { id: analysisId, organizationId }, result);
 
-    await update(db, analysisId, {
+    await update(db, claimed, {
       status: "complete",
       finished_at: new Date().toISOString(),
       coverage: storedCoverage(result.coverage),
@@ -60,12 +70,15 @@ export async function continueRun(db: Db, { analysisId, organizationId, reposito
       stage_message: `Mapped ${count(result.files.length, "file")} and ${count(result.edges.length, "edge")}`,
     });
   } catch (error) {
+    // A newer run owns the row now; its outcome is the one to record.
+    if (error instanceof SupersededError) throw error;
     // The stage stays where it was, so the row says where the run stopped.
     const message = error instanceof Error ? error.message : String(error);
     const failed = await db
       .from("analyses")
       .update({ status: "failed", error: message, finished_at: new Date().toISOString() })
-      .eq("id", analysisId);
+      .eq("id", analysisId)
+      .eq("started_at", claimed.claimedStartedAt);
     if (failed.error) {
       throw new Error(`Run failed (${message}), and recording the failure failed too: ${failed.error.message}`, { cause: error });
     }
@@ -96,24 +109,35 @@ export async function claimAnalysis(db: Db, analysisId: string): Promise<Claimed
     })
     .eq("id", analysisId)
     .or(`status.neq.running,started_at.lt.${staleBefore}`)
-    .select("organization_id, projects!inner(repo_owner, repo_name)")
+    .select("organization_id, started_at, projects!inner(repo_owner, repo_name)")
     .maybeSingle();
   if (error) throw new Error(`Starting analysis ${analysisId} failed: ${error.message}`);
   if (!data) throw new AlreadyRunningError(`Analysis ${analysisId} is already running, or doesn't exist`);
+  // The claim just set it, so a null here means the update didn't do what it says.
+  if (!data.started_at) throw new Error(`Starting analysis ${analysisId} left it without a start time`);
   return {
     analysisId,
     organizationId: data.organization_id,
     repository: { owner: data.projects.repo_owner, name: data.projects.repo_name },
+    // As the database stored it, so matching on it later compares like with like.
+    claimedStartedAt: data.started_at,
   };
 }
 
-async function enter(db: Db, analysisId: string, stage: Stage, message: string): Promise<void> {
-  await update(db, analysisId, { stage, stage_message: message });
+async function enter(db: Db, claimed: ClaimedRun, stage: Stage, message: string): Promise<void> {
+  await update(db, claimed, { stage, stage_message: message });
 }
 
-async function update(db: Db, analysisId: string, values: Database["public"]["Tables"]["analyses"]["Update"]): Promise<void> {
-  const { error } = await db.from("analyses").update(values).eq("id", analysisId);
-  if (error) throw new Error(`Updating analysis ${analysisId} failed: ${error.message}`);
+// No row matched means a newer run has claimed the analysis, so this one stops.
+async function update(db: Db, claimed: ClaimedRun, values: Database["public"]["Tables"]["analyses"]["Update"]): Promise<void> {
+  const { data, error } = await db
+    .from("analyses")
+    .update(values)
+    .eq("id", claimed.analysisId)
+    .eq("started_at", claimed.claimedStartedAt)
+    .select("id");
+  if (error) throw new Error(`Updating analysis ${claimed.analysisId} failed: ${error.message}`);
+  if (data.length === 0) throw new SupersededError(`Analysis ${claimed.analysisId} was taken over by a newer run`);
 }
 
 function count(n: number, noun: string): string {
