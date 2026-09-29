@@ -3,11 +3,11 @@
 
 import type { Role } from "../roles.ts";
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
-export type EdgeKind = "import" | "re-export" | "dynamic-import";
+export type EdgeKind = "import" | "re-export" | "dynamic-import" | "require";
 
-export const EDGE_KINDS: readonly EdgeKind[] = ["import", "re-export", "dynamic-import"];
+export const EDGE_KINDS: readonly EdgeKind[] = ["import", "re-export", "dynamic-import", "require"];
 
 export type ParsedFile = {
   /** Repository-relative, forward slashes. */
@@ -30,6 +30,12 @@ export type ParsedFile = {
   reachedBy: string | null;
   /** The role a convention of its project's adapter gives it. Null when none does. */
   role: Role | null;
+  /**
+   * The names this file exports, ESM and CommonJS alike, as written in it, in
+   * source order. `export * from` adds nothing here: which names it passes on
+   * lives in the other file, and that file is a re-export edge away.
+   */
+  exports: string[];
 };
 
 /** The repository root, and every folder below it whose package.json a framework adapter detected. */
@@ -95,6 +101,7 @@ export type ExcludedReason =
 
 export type UnresolvedReason =
   | "non-literal-dynamic-import"
+  | "non-literal-require"
   | "file-not-found"
   | "directory-without-index"
   | "alias-target-not-found"

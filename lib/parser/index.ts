@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import path from "node:path";
 import { Project, ts } from "ts-morph";
-import { extractImports } from "./extract.ts";
+import { extractExports, extractImports } from "./extract.ts";
 import { dedupeEdges, fanCounts } from "./graph.ts";
 import { createResolver } from "./resolve.ts";
 import {
@@ -78,20 +78,26 @@ export function parseSelection({ root, walk }: Selection): ParseResult {
 
   const coverage: Coverage["imports"] = {
     total: emptyCounts(),
-    byKind: { import: emptyCounts(), "re-export": emptyCounts(), "dynamic-import": emptyCounts() },
+    byKind: { import: emptyCounts(), "re-export": emptyCounts(), "dynamic-import": emptyCounts(), require: emptyCounts() },
     external: { package: 0, builtin: 0, "outside-root": 0 },
     excluded: {},
     unresolvedByReason: {},
     unresolved: [],
   };
   const rawEdges: Edge[] = [];
+  const exportsOf = new Map<string, string[]>();
 
   for (const { candidate, sourceFile } of parsed) {
+    exportsOf.set(candidate.path, extractExports(sourceFile));
     for (const found of extractImports(sourceFile)) {
       const specifier = found.literal ? found.specifier : found.expression;
       const outcome: ImportStatus = found.literal
         ? resolver.resolve(candidate.absolutePath, found.specifier, found.kind)
-        : { status: "unresolved", reason: "non-literal-dynamic-import", detail: "the path is computed at runtime" };
+        : {
+            status: "unresolved",
+            reason: found.kind === "require" ? "non-literal-require" : "non-literal-dynamic-import",
+            detail: "the path is computed at runtime",
+          };
 
       coverage.total.seen++;
       coverage.byKind[found.kind].seen++;
@@ -145,6 +151,7 @@ export function parseSelection({ root, walk }: Selection): ParseResult {
       fanOut: fan.get(candidate.path)?.fanOut ?? 0,
       reachedBy: candidate.reachedBy,
       role: conventions.roles.get(candidate.path) ?? null,
+      exports: exportsOf.get(candidate.path) ?? [],
     }))
     .sort((a, b) => a.path.localeCompare(b.path));
 

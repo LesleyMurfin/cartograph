@@ -43,14 +43,14 @@ export default async function AnalysisPage({ params }: PageProps<"/analyses/[id]
   }
 
   if (loaded.kind === "outdated") {
-    // Stored before the parser read roles and routes. Showing it would present
-    // every file as unclassified and the route table as empty, neither of
-    // which was checked.
+    // Stored by an older parser. Showing it would present what that parser
+    // never looked for (roles, routes, require() edges, export names) as
+    // checked and found empty.
     return (
       <div className="flex h-full flex-col">
         <AnalysisHeader {...loaded.header} />
         <div className="px-3 py-3 text-xs">
-          <p>This analysis was stored by an older version of the parser, which didn&apos;t read file roles or routes.</p>
+          <p>This analysis was stored by an older version of the parser, which didn&apos;t read everything the current one does.</p>
           <p className="mt-0.5 text-fg-muted">Re-run it to map it with the current one.</p>
         </div>
       </div>

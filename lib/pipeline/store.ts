@@ -33,6 +33,7 @@ export async function storeResult(db: Db, analysis: { id: string; organizationId
       fan_in: f.fanIn,
       fan_out: f.fanOut,
       reached_by: f.reachedBy,
+      exports: f.exports,
     })),
     ...result.coverage.files.skippedFiles.map((f) => ({
       organization_id: analysis.organizationId,

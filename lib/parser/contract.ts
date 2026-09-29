@@ -29,6 +29,7 @@ const SKIP_REASONS: readonly SkipReason[] = ["declaration-file", "too-large", "b
 const EXCLUDED_REASONS: readonly ExcludedReason[] = ["non-code-file", "declaration-file", "target-skipped", "in-excluded-directory"];
 const UNRESOLVED_REASONS: readonly UnresolvedReason[] = [
   "non-literal-dynamic-import",
+  "non-literal-require",
   "file-not-found",
   "directory-without-index",
   "alias-target-not-found",
@@ -96,6 +97,7 @@ function parsedFile(value: unknown, at: string): ParsedFile {
     fanOut: count(o.fanOut, `${at}.fanOut`),
     reachedBy: o.reachedBy === null ? null : string(o.reachedBy, `${at}.reachedBy`),
     role: o.role === null ? null : oneOf(o.role, `${at}.role`, ROLE_IDS),
+    exports: array(o.exports, `${at}.exports`, string),
   };
 }
 
@@ -156,6 +158,7 @@ function coverage(value: unknown, at: string): Coverage {
         import: statusCounts(byKind.import, `${at}.imports.byKind.import`),
         "re-export": statusCounts(byKind["re-export"], `${at}.imports.byKind.re-export`),
         "dynamic-import": statusCounts(byKind["dynamic-import"], `${at}.imports.byKind.dynamic-import`),
+        require: statusCounts(byKind.require, `${at}.imports.byKind.require`),
       },
       external: {
         package: count(external.package, `${at}.imports.external.package`),

@@ -3,6 +3,8 @@
 //   pnpm parse <dir>                   print the summary
 //   pnpm parse <dir> --out result.json also write the full result, then read it back
 //   pnpm parse --read result.json      validate a written result and print its summary
+//   pnpm parse <dir> --compare old.json
+//                                      check the edges old.json has kinds for are byte-identical
 //   add --all to list every unresolved import instead of a few per reason
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -17,7 +19,9 @@ function main(argv: string[]): void {
   const all = argv.includes("--all");
   const out = valueOf(argv, "--out");
   const read = valueOf(argv, "--read");
-  const positional = argv.filter((arg, i) => !arg.startsWith("--") && argv[i - 1] !== "--out" && argv[i - 1] !== "--read");
+  const compare = valueOf(argv, "--compare");
+  const valueFlags = ["--out", "--read", "--compare"];
+  const positional = argv.filter((arg, i) => !arg.startsWith("--") && !valueFlags.includes(argv[i - 1] ?? ""));
 
   if (read) {
     const result = deserializeParseResult(readFileSync(read, "utf8"));
@@ -46,6 +50,34 @@ function main(argv: string[]): void {
     if (serializeParseResult(back) !== text) throw new Error(`${out} changed on the way back in`);
     console.log(`Wrote ${out} (${(text.length / 1024).toFixed(0)} KB), read it back, contract holds.`);
   }
+
+  if (compare) compareEdges(result, compare);
+}
+
+// An older output may come from an earlier schema, so it isn't read through
+// the contract: only its edge list is, as raw JSON. require() edges are set
+// aside first, since no parser before them could find one, so "identical"
+// means the edges it did find haven't changed by a byte.
+function compareEdges(result: ParseResult, file: string): void {
+  const old: unknown = JSON.parse(readFileSync(file, "utf8"));
+  const oldEdges: unknown = typeof old === "object" && old !== null ? Reflect.get(old, "edges") : undefined;
+  if (!Array.isArray(oldEdges)) throw new Error(`${file} has no edge list`);
+  const kept = result.edges.filter((e) => e.kind !== "require");
+  const setAside = result.edges.length - kept.length;
+  const before = JSON.stringify(oldEdges, null, 2);
+  const after = JSON.stringify(kept, null, 2);
+  console.log(`\nCompare   ${file}`);
+  console.log(`  ${oldEdges.length} edges before, ${kept.length} of those kinds now, plus ${setAside} require`);
+  if (before === after) {
+    console.log("  byte-identical");
+    return;
+  }
+  const a = before.split("\n");
+  const b = after.split("\n");
+  const found = a.findIndex((line, i) => line !== b[i]);
+  const at = found === -1 ? a.length : found;
+  console.log(`  DIFFERENT, first at line ${at + 1} of the edge list:\n    before: ${a[at] ?? "(end)"}\n    now:    ${b[at] ?? "(end)"}`);
+  process.exitCode = 1;
 }
 
 function printSummary(result: ParseResult, all: boolean): void {

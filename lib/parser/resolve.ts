@@ -263,6 +263,9 @@ function normaliseOptions(options: ts.CompilerOptions): ts.CompilerOptions {
 function resolutionMode(fromAbsolute: string, kind: EdgeKind, options: ts.CompilerOptions): ts.ResolutionMode {
   const resolution = options.moduleResolution;
   if (resolution === undefined || !NODE_ESM_RESOLUTION.has(resolution)) return undefined;
+  // require() resolves with the "require" conditions whatever the file's own
+  // format. The other kinds keep exactly the modes they had before it existed.
+  if (kind === "require") return ts.ModuleKind.CommonJS;
   const ext = path.extname(fromAbsolute);
   if (ext === ".cts" || ext === ".cjs") return kind === "dynamic-import" ? ts.ModuleKind.ESNext : ts.ModuleKind.CommonJS;
   if (ext === ".mts" || ext === ".mjs" || kind === "dynamic-import") return ts.ModuleKind.ESNext;

@@ -423,6 +423,13 @@ function FileStructure(props: {
         <Fact label="Reached by">
           {file.reachedBy ?? <span className="text-fg-muted">imports only</span>}
         </Fact>
+        <Fact label="Exports">
+          {file.exports.length === 0 ? (
+            <span className="text-fg-muted">nothing named in this file</span>
+          ) : (
+            <span className="font-mono break-all">{file.exports.join(", ")}</span>
+          )}
+        </Fact>
       </dl>
       <div className="flex gap-1.5 border-b border-line px-3 py-2">
         <WalkButton direction="dependents" label="Blast radius" walk={walk} onWalk={onWalk} />
@@ -530,6 +537,7 @@ function EdgeMarks({ neighbour }: { neighbour: Neighbour }) {
   const marks = [
     ...(neighbour.kinds.includes("re-export") ? ["re-export"] : []),
     ...(neighbour.kinds.includes("dynamic-import") ? ["dynamic"] : []),
+    ...(neighbour.kinds.includes("require") ? ["require"] : []),
     ...(neighbour.typeOnly ? ["type"] : []),
   ];
   if (marks.length === 0) return null;

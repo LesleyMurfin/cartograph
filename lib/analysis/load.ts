@@ -18,7 +18,7 @@ export async function loadStoredAnalysis(db: Db, analysis: { id: string; label: 
   const files = await readAll((from, to) =>
     db
       .from("files")
-      .select("id, path, module, lines, bytes, hash, fan_in, fan_out, reached_by, skip_reason, skip_detail, file_roles(role)")
+      .select("id, path, module, lines, bytes, hash, fan_in, fan_out, reached_by, exports, skip_reason, skip_detail, file_roles(role)")
       .eq("analysis_id", analysis.id)
       .order("id")
       .range(from, to),
@@ -58,6 +58,7 @@ export async function loadStoredAnalysis(db: Db, analysis: { id: string; label: 
         reachedBy: f.reached_by,
         // One row at most: file_id is unique in file_roles.
         role: f.file_roles[0]?.role ?? null,
+        exports: f.exports,
       }))
       .sort((a, b) => a.path.localeCompare(b.path)),
     edges: edges.map((e) => ({
