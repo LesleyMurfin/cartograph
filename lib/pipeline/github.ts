@@ -79,6 +79,23 @@ export async function resolveHeadCommit({ owner, name }: Repository): Promise<st
   throw new PipelineError(`GitHub answered ${response.status} when asked for ${owner}/${name}'s latest commit`);
 }
 
+// One file's bytes at one commit, or null when the file isn't there at that
+// commit. raw.githubusercontent.com serves the committed bytes, so their
+// sha256 is comparable with the hash the parser stored.
+export async function fetchFileAt({ owner, name }: Repository, sha: string, filePath: string): Promise<Buffer | null> {
+  const what = `Fetching ${filePath} from ${owner}/${name} at ${sha.slice(0, 7)}`;
+  const encoded = filePath.split("/").map(encodeURIComponent).join("/");
+  const response = await withTimeout(what, API_TIMEOUT_MS, () =>
+    fetch(`https://raw.githubusercontent.com/${owner}/${name}/${sha}/${encoded}`, {
+      headers: { "User-Agent": "cartograph" },
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    }),
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) throw new PipelineError(`${what} failed: GitHub answered ${response.status}`);
+  return Buffer.from(await withTimeout(what, API_TIMEOUT_MS, () => response.arrayBuffer()));
+}
+
 // Streams the archive straight into the directory, dropping GitHub's
 // "<owner>-<name>-<sha>/" wrapper folder. tar refuses absolute paths and "..",
 // so nothing lands outside it.

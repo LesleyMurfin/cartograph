@@ -20,7 +20,7 @@ import {
   type Selection,
 } from "@/lib/graph/highlight";
 import { buildView } from "@/lib/graph/view";
-import { UNCLASSIFIED } from "@/lib/roles";
+import { UNCLASSIFIED, type ModelRole } from "@/lib/roles";
 import type { Edge, ParsedFile } from "@/lib/parser/types";
 import { layout, type Box } from "./layout";
 import {
@@ -43,6 +43,8 @@ const INITIAL_MAX_ZOOM = 1.25;
 export type MapControl = {
   files: ParsedFile[];
   edges: Edge[];
+  /** Roles the model gave files convention left unclassified, for the category focus. */
+  modelRoles: ReadonlyMap<string, ModelRole>;
   folding: Folding;
   /** Open groups and how far each has been scrolled. */
   open: ReadonlyMap<string, number>;
@@ -72,6 +74,7 @@ export function DependencyMap(props: MapControl) {
 function MapCanvas({
   files,
   edges,
+  modelRoles,
   folding,
   open,
   selection,
@@ -89,7 +92,10 @@ function MapCanvas({
   const boxes = useMemo(() => layout(view.objects, view.edges), [view]);
   const lit = useMemo(() => highlightFor(view, edges, selection), [view, edges, selection]);
   const hovered = useMemo(() => hoverEndpoint(view, hover), [view, hover]);
-  const railKeys = useMemo(() => new Map(files.map((f) => [f.path, f.role ?? UNCLASSIFIED])), [files]);
+  const railKeys = useMemo(
+    () => new Map(files.map((f) => [f.path, f.role ?? modelRoles.get(f.path) ?? UNCLASSIFIED])),
+    [files, modelRoles],
+  );
   const focus = useMemo(() => categoryFocus(view, category, railKeys), [view, category, railKeys]);
 
   const nodes = useMemo(

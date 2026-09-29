@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { validateParseResult } from "../parser/contract.ts";
 import { SCHEMA_VERSION, type ParseResult } from "../parser/types.ts";
+import { isModelRole, type ModelRole } from "../roles.ts";
 import type { Database } from "../supabase/database.types.ts";
 
 type Db = SupabaseClient<Database>;
@@ -14,11 +15,18 @@ const PAGE = 1000;
 // output file was: an edge to a file that isn't there, or counts that don't
 // add up, fail by field instead of drawing. Reads with the caller's client,
 // so the policies decide whether any of it comes back.
-export async function loadStoredAnalysis(db: Db, analysis: { id: string; label: string; coverage: unknown; projects: unknown }): Promise<ParseResult> {
+//
+// A file's role in the parse result is convention's alone. Roles the model
+// gave come back separately, so nothing downstream can mistake a label for a
+// fact the parser established.
+export async function loadStoredAnalysis(
+  db: Db,
+  analysis: { id: string; label: string; coverage: unknown; projects: unknown },
+): Promise<{ result: ParseResult; modelRoles: Record<string, ModelRole> }> {
   const files = await readAll((from, to) =>
     db
       .from("files")
-      .select("id, path, module, lines, bytes, hash, fan_in, fan_out, reached_by, exports, skip_reason, skip_detail, file_roles(role)")
+      .select("id, path, module, lines, bytes, hash, fan_in, fan_out, reached_by, exports, skip_reason, skip_detail, file_roles(role, source)")
       .eq("analysis_id", analysis.id)
       .order("id")
       .range(from, to),
@@ -42,7 +50,15 @@ export async function loadStoredAnalysis(db: Db, analysis: { id: string; label: 
   const coverage = typeof analysis.coverage === "object" && analysis.coverage !== null ? analysis.coverage : {};
   const coverageFiles: unknown = Reflect.get(coverage, "files");
 
-  return validateParseResult({
+  const modelRoles: Record<string, ModelRole> = {};
+  for (const f of parsed) {
+    const role = f.file_roles[0];
+    if (role?.source !== "model") continue;
+    if (!isModelRole(role.role)) throw new Error(`Stored model role "${role.role}" on ${f.path} isn't one a model may give`);
+    modelRoles[f.path] = role.role;
+  }
+
+  const result = validateParseResult({
     schemaVersion: SCHEMA_VERSION,
     root: analysis.label,
     projects: analysis.projects,
@@ -57,7 +73,7 @@ export async function loadStoredAnalysis(db: Db, analysis: { id: string; label: 
         fanOut: f.fan_out,
         reachedBy: f.reached_by,
         // One row at most: file_id is unique in file_roles.
-        role: f.file_roles[0]?.role ?? null,
+        role: f.file_roles[0]?.source === "convention" ? f.file_roles[0].role : null,
         exports: f.exports,
       }))
       .sort((a, b) => a.path.localeCompare(b.path)),
@@ -84,9 +100,10 @@ export async function loadStoredAnalysis(db: Db, analysis: { id: string; label: 
     // Config problems aren't stored; nothing on the map reads them.
     configs: [],
   });
+  return { result, modelRoles };
 }
 
-async function readAll<T>(page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>): Promise<T[]> {
+export async function readAll<T>(page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>): Promise<T[]> {
   const rows: T[] = [];
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await page(from, from + PAGE - 1);

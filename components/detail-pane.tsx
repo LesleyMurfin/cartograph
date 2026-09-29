@@ -9,7 +9,8 @@ import { findInsights, INSIGHT_SENTENCES, type Cycle } from "@/lib/graph/insight
 import { adjacency, DEFAULT_DEPTH, reach, type Adjacency, type Direction } from "@/lib/graph/reach";
 import { groupFan, groupId } from "@/lib/graph/view";
 import type { Edge, ParsedFile, Project } from "@/lib/parser/types";
-import { railLabel, UNCLASSIFIED } from "@/lib/roles";
+import { railLabel, UNCLASSIFIED, type ModelRole } from "@/lib/roles";
+import { ExplanationPanel, targetKey, type ExplainTarget, type ExplanationState, type Freshness } from "./explanation-panel";
 import { CategorySwatch } from "./map/swatch";
 
 export type Tab = "structure" | "explanation";
@@ -41,6 +42,12 @@ type Props = {
   onInsightsOpen: (open: boolean) => void;
   onReveal: (path: string) => void;
   onHover: (hover: Selection) => void;
+  modelRoles: ReadonlyMap<string, ModelRole>;
+  analysisId: string;
+  commitSha: string;
+  explanations: ReadonlyMap<string, ExplanationState>;
+  freshness: ReadonlyMap<string, Freshness>;
+  onExplain: (target: ExplainTarget) => void;
 };
 
 export function DetailPane(props: Props) {
@@ -59,12 +66,41 @@ export function DetailPane(props: Props) {
 
   if (!selection) return <RepositorySummary {...props} paths={paths} />;
 
+  // Only a path that is a parsed file on this map becomes a link; anything
+  // else the model wrote stays text.
+  const explanation = (target: ExplainTarget) => (
+    <ExplanationPanel
+      target={target}
+      analysisId={props.analysisId}
+      commitSha={props.commitSha}
+      state={props.explanations.get(targetKey(target))}
+      freshness={props.freshness.get(targetKey(target))}
+      onExplain={props.onExplain}
+      isPath={(p) => byPath.has(p)}
+      renderPath={(p) => <InlinePath path={p} paths={paths} />}
+    />
+  );
+
   if (selection.kind === "file") {
     const file = byPath.get(selection.path);
     if (!file) return null;
     return (
-      <Selected title={<PathTitle path={file.path} paths={paths} />} caption="file" tab={props.tab} onTab={props.onTab}>
-        <FileStructure file={file} edges={props.edges} graph={graph} walk={props.walk} onWalk={props.onWalk} paths={paths} />
+      <Selected
+        title={<PathTitle path={file.path} paths={paths} />}
+        caption="file"
+        tab={props.tab}
+        onTab={props.onTab}
+        explanation={explanation({ kind: "file", path: file.path })}
+      >
+        <FileStructure
+          file={file}
+          modelRole={props.modelRoles.get(file.path) ?? null}
+          edges={props.edges}
+          graph={graph}
+          walk={props.walk}
+          onWalk={props.onWalk}
+          paths={paths}
+        />
       </Selected>
     );
   }
@@ -77,6 +113,7 @@ export function DetailPane(props: Props) {
       caption="folder"
       tab={props.tab}
       onTab={props.onTab}
+      explanation={explanation({ kind: "group", dir: group.dir })}
     >
       <GroupStructure files={group.files} fan={groupFanOf(folding, props.edges, group.dir)} />
     </Selected>
@@ -328,7 +365,14 @@ function RankedList(props: {
 
 // ── Something selected ───────────────────────────────────────────────────────
 
-function Selected(props: { title: ReactNode; caption: string; tab: Tab; onTab: (tab: Tab) => void; children: ReactNode }) {
+function Selected(props: {
+  title: ReactNode;
+  caption: string;
+  tab: Tab;
+  onTab: (tab: Tab) => void;
+  explanation: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <div className="pb-3">
       <header className="border-b border-line px-3 pt-2">
@@ -339,14 +383,7 @@ function Selected(props: { title: ReactNode; caption: string; tab: Tab; onTab: (
           <TabButton tab="explanation" label="Explanation" current={props.tab} onTab={props.onTab} />
         </div>
       </header>
-      {props.tab === "structure" ? (
-        props.children
-      ) : (
-        <div className="px-3 py-3 text-[11px] text-fg-muted">
-          <p className="text-fg">No explanation yet.</p>
-          <p className="mt-0.5">Explanations come from a model call, and nothing makes one yet.</p>
-        </div>
-      )}
+      {props.tab === "structure" ? props.children : props.explanation}
     </div>
   );
 }
@@ -386,13 +423,15 @@ function PathTitle({ path, paths }: { path: string; paths: PathActions }) {
 
 function FileStructure(props: {
   file: ParsedFile;
+  /** The model's label, only ever for a file convention left unclassified. */
+  modelRole: ModelRole | null;
   edges: Edge[];
   graph: Adjacency;
   walk: Direction | null;
   onWalk: (walk: Direction | null) => void;
   paths: PathActions;
 }) {
-  const { file, edges, graph, walk, onWalk, paths } = props;
+  const { file, modelRole, edges, graph, walk, onWalk, paths } = props;
   const { imports, importedBy } = useMemo(() => neighboursOf(edges, file.path), [edges, file.path]);
   const category = categoryOf(file.path);
   // Counts are the lengths of the lists below them, so they can't disagree.
@@ -406,7 +445,15 @@ function FileStructure(props: {
           </span>
         </Fact>
         <Fact label="Role">
-          {file.role === null ? <span className="text-fg-muted">{railLabel(UNCLASSIFIED).toLowerCase()}</span> : railLabel(file.role)}
+          {file.role !== null ? (
+            railLabel(file.role)
+          ) : modelRole !== null ? (
+            <>
+              {railLabel(modelRole)} <span className="text-fg-muted">· labelled by the model</span>
+            </>
+          ) : (
+            <span className="text-fg-muted">{railLabel(UNCLASSIFIED).toLowerCase()}</span>
+          )}
         </Fact>
         <Fact label="Folder">
           <span className="font-mono break-all">{file.module}</span>
@@ -574,6 +621,25 @@ function GroupStructure({ files, fan }: { files: string[]; fan: { fanIn: number;
 }
 
 // ── Shared ───────────────────────────────────────────────────────────────────
+
+// A path inside an explanation's prose. It acts like every other path in the
+// pane, just set inline.
+function InlinePath({ path, paths }: { path: string; paths: PathActions }) {
+  return (
+    <button
+      type="button"
+      title={path}
+      onClick={() => paths.onReveal(path)}
+      onMouseEnter={() => paths.onHover({ kind: "file", path })}
+      onMouseLeave={() => paths.onHover(null)}
+      className={`rounded-[2px] px-0.5 text-left font-mono text-[11px] break-all text-accent hover:underline ${
+        paths.isHovered(path) ? "bg-accent/15" : ""
+      }`}
+    >
+      {path}
+    </button>
+  );
+}
 
 // Every path in the pane is one of these: clicking moves the map's selection
 // to it, hovering marks it on the map, and it's marked here when the map

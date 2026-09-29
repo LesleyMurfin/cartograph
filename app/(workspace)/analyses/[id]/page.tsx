@@ -21,7 +21,7 @@ export default async function AnalysisPage({ params }: PageProps<"/analyses/[id]
   if (!loaded) notFound();
 
   if (loaded.kind === "map") {
-    const { result, header } = loaded;
+    const { result, modelRoles, header } = loaded;
     // Only what the pane shows crosses to the browser, not the whole coverage report.
     return (
       <div className="flex h-full flex-col">
@@ -31,6 +31,9 @@ export default async function AnalysisPage({ params }: PageProps<"/analyses/[id]
           edges={result.edges}
           routes={result.routes}
           routeCoverage={result.coverage.routes}
+          modelRoles={modelRoles}
+          analysisId={header.analysisId}
+          commitSha={header.commitSha}
           repository={{
             name: header.repository.name,
             projects: result.projects,
@@ -63,7 +66,7 @@ export default async function AnalysisPage({ params }: PageProps<"/analyses/[id]
 }
 
 type Loaded =
-  | { kind: "map"; result: Awaited<ReturnType<typeof loadStoredAnalysis>>; header: ComponentProps<typeof AnalysisHeader> }
+  | ({ kind: "map"; header: ComponentProps<typeof AnalysisHeader> } & Awaited<ReturnType<typeof loadStoredAnalysis>>)
   | { kind: "outdated"; header: ComponentProps<typeof AnalysisHeader> }
   | { kind: "progress"; props: ComponentProps<typeof AnalysisProgress> };
 
@@ -83,13 +86,13 @@ async function loadAnalysis(id: string): Promise<Loaded | null> {
   if (analysis.status === "complete" && analysis.commit_sha) {
     const header = { analysisId: analysis.id, repository, commitSha: analysis.commit_sha };
     if (analysis.schema_version !== SCHEMA_VERSION) return { kind: "outdated", header };
-    const result = await loadStoredAnalysis(supabase, {
+    const stored = await loadStoredAnalysis(supabase, {
       id: analysis.id,
       label: `${repository.owner}/${repository.name}`,
       coverage: analysis.coverage,
       projects: analysis.detected_projects,
     });
-    return { kind: "map", result, header };
+    return { kind: "map", ...stored, header };
   }
 
   // Stale is a fact about the moment of the request, worked out once here.
