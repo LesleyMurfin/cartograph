@@ -95,7 +95,14 @@ async function recordPathCheck(tree: RunTree | undefined, check: PathCheck): Pro
   const { client, project_name } = tree;
   let projectId = projectIds.get(project_name);
   if (!projectId) {
-    projectId = client.readProject({ projectName: project_name }).then((p) => p.id);
+    // A failed lookup isn't kept, so the next answer's feedback tries again.
+    projectId = client.readProject({ projectName: project_name }).then(
+      (p) => p.id,
+      (error: unknown) => {
+        projectIds.delete(project_name);
+        throw error;
+      },
+    );
     projectIds.set(project_name, projectId);
   }
   await client.awaitPendingTraceBatches();

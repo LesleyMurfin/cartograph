@@ -44,7 +44,8 @@ const NAMES = new Set(["next.js", "node.js", "nuxt.js", "vue.js", "express.js", 
 /**
  * What decides "path-shaped", in order:
  * - URLs, and scoped packages like `@supabase/supabase-js`, aren't paths.
- * - `./x` and `../x` are resolved against the explained file's folder first.
+ * - `./x` and `../x` are resolved against the explained file's folder and
+ *   must then match exactly.
  * - A leading `/` with no extension is a URL route, not a file.
  * - With a `/`: a path when it starts with a top-level folder of a shown path
  *   (then it must match exactly), or its last part has a file extension.
@@ -76,12 +77,16 @@ export function checkPaths(answer: string, shown: { paths: readonly string[]; ba
     if (!t || /^[a-z][a-z0-9+.-]*:\/\//i.test(t) || t.startsWith("www.")) return null;
     if (NAMES.has(t.toLowerCase())) return null;
 
-    let rooted = true;
+    // A relative path, once resolved, names one exact place: it's never
+    // matched as a tail of something else.
     if (t.startsWith("./") || t.startsWith("../")) {
-      const resolved = posix.normalize(posix.join(shown.base, t));
+      const resolved = posix.normalize(posix.join(shown.base, t)).replace(/\/+$/, "");
       if (resolved === ".." || resolved.startsWith("../")) return false;
-      t = resolved;
-    } else if (t.startsWith("@/") || t.startsWith("~/")) {
+      return files.has(resolved) || dirs.has(resolved) || modules.has(resolved);
+    }
+
+    let rooted = true;
+    if (t.startsWith("@/") || t.startsWith("~/")) {
       t = t.slice(2);
       rooted = false;
     } else if (t.startsWith("@")) {
@@ -121,8 +126,8 @@ function moduleName(path: string): string {
   return path.replace(/\.[^/.]+$/, "").replace(/\/index$/, "");
 }
 
-// Every backticked span whole, then the prose between them word by word, with
-// the punctuation around a word dropped.
+// Every backticked span whole, or word by word when it holds several, then the
+// prose between spans word by word, with the punctuation around a word dropped.
 function tokens(answer: string): { token: string; quoted: boolean }[] {
   const out: { token: string; quoted: boolean }[] = [];
   const prose: string[] = [];
@@ -130,7 +135,14 @@ function tokens(answer: string): { token: string; quoted: boolean }[] {
   for (const m of answer.matchAll(/`([^`\n]+)`/g)) {
     prose.push(answer.slice(last, m.index));
     const inner = m[1].trim();
-    if (inner && !/\s/.test(inner)) out.push({ token: inner, quoted: true });
+    if (!/\s/.test(inner)) {
+      if (inner) out.push({ token: inner, quoted: true });
+    } else {
+      for (const word of inner.split(/\s+/)) {
+        const core = trimmed(word);
+        if (core) out.push({ token: core, quoted: true });
+      }
+    }
     last = m.index + m[0].length;
   }
   prose.push(answer.slice(last));

@@ -76,7 +76,13 @@ export async function ensureDataset(
   const examples = await build();
   if (exists) await langsmith.deleteDataset({ datasetName: name });
   const dataset = await langsmith.createDataset(name, { description });
-  await langsmith.createExamples(examples.map((e) => ({ ...e, dataset_id: dataset.id })));
+  try {
+    await langsmith.createExamples(examples.map((e) => ({ ...e, dataset_id: dataset.id })));
+  } catch (error) {
+    // A half-uploaded dataset would be used as-is next time; gone, it's rebuilt.
+    await langsmith.deleteDataset({ datasetId: dataset.id });
+    throw error;
+  }
   return { name, url: await langsmith.getDatasetUrl({ datasetId: dataset.id }), built: true };
 }
 

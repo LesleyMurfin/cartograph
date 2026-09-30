@@ -59,9 +59,12 @@ async function build(db: Db): Promise<ExampleCreate[]> {
           continue;
         }
         // The question is exactly the one the app would ask, which never
-        // includes the file's own role.
+        // includes the file's own role. A file importing itself is its own
+        // neighbour, so its role is hidden there too, as it would be unlabelled.
+        const hide = (n: { path: string; role: string | null }) => (n.path === f.path ? { ...n, role: null } : n);
+        const question = { ...loaded.classify, imports: loaded.classify.imports.map(hide), importedBy: loaded.classify.importedBy.map(hide) };
         examples.push({
-          inputs: { question: loaded.classify, source: got.source },
+          inputs: { question, source: got.source },
           outputs: { role },
           metadata: { repository: `${analysis.repository.owner}/${analysis.repository.name}`, commit: analysis.commitSha, path: f.path },
         });
