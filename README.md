@@ -124,24 +124,29 @@ pnpm install
 Create a new file named `.env.local` in the root of your project and add the following content:
 
 ```env
+# CLERK
 NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in
 NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up
 NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL=/
 NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL=/
-
-# Clerk
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
 CLERK_SECRET_KEY=
 
+# SUPABASE
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 SUPABASE_SECRET_KEY=
-OPENAI_API_KEY=
+
+# LANGSMITH
 LANGSMITH_TRACING=true
 LANGSMITH_API_KEY=
 LANGSMITH_PROJECT=cartograph
 LANGSMITH_ENDPOINT=https://api.smith.langchain.com
-# The agent service (deep-agent/, `pnpm dev` there).
+
+# OPENAI
+OPENAI_API_KEY=
+
+# Agent Service (deep-agent/, `pnpm dev` there).
 AGENT_URL=http://localhost:2024
 ```
 
