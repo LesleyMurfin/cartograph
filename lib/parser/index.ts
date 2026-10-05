@@ -222,9 +222,26 @@ export async function parseCodebase(options: ParserOptions): Promise<SpecParseRe
     maxFiles = Math.floor(maxFiles);
   }
 
+  // Explicit tsconfigPath: non-empty must exist; undefined/"" → discovery.
+  let tsconfigPath: string | undefined;
+  if (options.tsconfigPath !== undefined && options.tsconfigPath !== "") {
+    if (typeof options.tsconfigPath !== "string") {
+      throw new Error("options.tsconfigPath must be a string");
+    }
+    const resolvedTsconfig = path.resolve(options.tsconfigPath);
+    const tsconfigStat = statSync(resolvedTsconfig, { throwIfNoEntry: false });
+    if (!tsconfigStat?.isFile()) {
+      throw new Error(`tsconfig not found: ${resolvedTsconfig}`);
+    }
+    tsconfigPath = resolvedTsconfig;
+  }
+
   // Walk the repository to collect candidate files.
-  // maxFiles is applied after parse/resolve so the resolver node set stays complete.
   const walk = walkRepository(root);
+
+  // Bound parse work: cap candidates before createSourceFile (0 → no files).
+  const candidates =
+    maxFiles === undefined ? walk.candidates : walk.candidates.slice(0, maxFiles);
 
   // Create ts-morph Project for parsing
   const project = new Project({
@@ -234,7 +251,7 @@ export async function parseCodebase(options: ParserOptions): Promise<SpecParseRe
   });
 
   // Parse source files
-  const sourceFiles = walk.candidates.map((candidate) => ({
+  const sourceFiles = candidates.map((candidate) => ({
     candidate,
     sourceFile: project.createSourceFile(candidate.absolutePath, candidate.content, { overwrite: true }),
   }));
@@ -274,13 +291,15 @@ export async function parseCodebase(options: ParserOptions): Promise<SpecParseRe
     });
   }
 
-  // Create resolver
+  // Create resolver. nodes includes the full walk candidate set so maxFiles
+  // (parse-only cap) does not make in-repo targets look like walk/resolver drift.
   const resolver = createResolver({
     root,
-    nodes: new Set(parsed.map((entry) => entry.candidate.path)),
+    nodes: new Set(walk.candidates.map((c) => c.path)),
     skipped: new Map(skipped.map((file) => [file.path, file])),
     excludedDirectories: walk.excludedDirectories,
     workspacePackages: walk.workspacePackages,
+    tsconfigPath,
   });
 
 
@@ -435,10 +454,7 @@ export async function parseCodebase(options: ParserOptions): Promise<SpecParseRe
     })
     .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 
-  // Cap returned files after a complete resolve pass (Math.floor already applied).
-  if (maxFiles !== undefined) {
-    files = files.slice(0, maxFiles);
-  }
+  // maxFiles already bounded candidates before createSourceFile.
 
   return {
     files,

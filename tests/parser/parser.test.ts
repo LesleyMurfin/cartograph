@@ -105,7 +105,7 @@ describe("parseCodebase", () => {
     expect(result.files.length).toBeLessThanOrEqual(Math.floor(1.5));
   });
 
-  // Guard 3: tsconfigPath — discovery fallback; empty/missing must not throw
+  // Guard 3: tsconfigPath — undefined/"" discovery; explicit missing throws; valid uses path
   it("keeps @/ alias resolution when tsconfigPath is undefined", async () => {
     const result = await parseCodebase({ rootDir, tsconfigPath: undefined });
     expect(result.files.length).toBeGreaterThan(0);
@@ -121,9 +121,21 @@ describe("parseCodebase", () => {
     expect(result.files.length).toBeGreaterThan(0);
   });
 
-  it("does not throw when tsconfigPath is missing and still returns files", async () => {
-    const result = await parseCodebase({ rootDir, tsconfigPath: "/nonexistent/tsconfig.json" });
-    expect(Array.isArray(result.files)).toBe(true);
+  it("throws when explicit tsconfigPath does not exist", async () => {
+    await expect(
+      parseCodebase({ rootDir, tsconfigPath: "/nonexistent/tsconfig.json" }),
+    ).rejects.toThrow(/tsconfig not found/);
+  });
+
+  it("uses explicit valid tsconfigPath for alias resolution", async () => {
+    const result = await parseCodebase({
+      rootDir,
+      tsconfigPath: path.join(rootDir, "tsconfig.json"),
+    });
     expect(result.files.length).toBeGreaterThan(0);
+    const index = result.files.find((f) => f.relativePath === "src/index.ts");
+    expect(index).toBeDefined();
+    const aliasEdge = index!.edges.find((e) => e.rawImportSpecifier === "@/util");
+    expect(aliasEdge?.resolvedPath).toBe("src/util.ts");
   });
 });

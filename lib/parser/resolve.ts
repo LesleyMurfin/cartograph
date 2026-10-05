@@ -28,6 +28,8 @@ export type RepositoryIndex = {
   skipped: Map<string, SkippedFile>;
   excludedDirectories: ExcludedDirectory[];
   workspacePackages: Set<string>;
+  /** When set, always load this config instead of walking for nearest. */
+  tsconfigPath?: string;
 };
 
 export type Resolver = {
@@ -72,7 +74,7 @@ export function createResolver(index: RepositoryIndex): Resolver {
   };
 
   const configFor = (fromAbsolute: string): LoadedConfig => {
-    const configPath = findConfig(path.dirname(fromAbsolute));
+    const configPath = index.tsconfigPath ?? findConfig(path.dirname(fromAbsolute));
     if (!configPath) return noConfig;
     const existing = loaded.get(configPath);
     if (existing) return existing;
