@@ -177,3 +177,65 @@ export type ParseResult = {
   coverage: Coverage;
   configs: ConfigReport[];
 };
+// ============================================================================
+// Phase-03 Spec Types (parseCodebase API)
+// ============================================================================
+
+export type ParserOptions = {
+  rootDir: string;
+  tsconfigPath?: string;
+  maxFiles?: number;
+};
+
+export type SpecEdgeKind =
+  | "static_import"
+  | "re_export"
+  | "dynamic_import"
+  | "commonjs_require";
+
+export type ParserInsightCategory =
+  | "UNRESOLVED_IMPORT"
+  | "PARSE_ERROR"
+  | "DYNAMIC_SPECIFIER_UNRESOLVED";
+
+export interface ParserInsight {
+  category: ParserInsightCategory;
+  severity: "info" | "warning" | "error";
+  sourceFile: string;
+  specifier?: string;
+  lineNumber?: number;
+  title: string;
+  description: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SpecParsedEdge {
+  edgeType: SpecEdgeKind;
+  rawImportSpecifier: string;
+  resolvedPath: string | null;
+  isExternal: boolean;
+  importedSymbols: string[];
+}
+
+export interface SpecParsedFile {
+  relativePath: string;
+  extension: string;
+  contentHash: string;
+  sizeBytes: number;
+  lineCount: number;
+  astNodeCount: number;
+  edges: SpecParsedEdge[];
+}
+
+export type UnresolvedImportRow = {
+  sourceFile: string;
+  specifier: string;
+  errorReason: string;
+  lineNumber: number;
+};
+
+export interface SpecParseResult {
+  files: SpecParsedFile[];
+  unresolvedImports: UnresolvedImportRow[];
+  insights: ParserInsight[];
+}

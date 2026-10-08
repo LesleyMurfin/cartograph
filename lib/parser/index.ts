@@ -1,9 +1,9 @@
 import { statSync } from "node:fs";
 import path from "node:path";
-import { Project, ts } from "ts-morph";
+import { Project, Node, ts } from "ts-morph";
 import { extractExports, extractImports } from "./extract.ts";
 import { dedupeEdges, fanCounts } from "./graph.ts";
-import { createResolver } from "./resolve.ts";
+import { createResolver } from "./resolver.ts";
 import {
   SCHEMA_VERSION,
   type Coverage,
@@ -14,6 +14,13 @@ import {
   type Route,
   type SkippedFile,
   type StatusCounts,
+  type ParserOptions,
+  type ParserInsight,
+  type SpecParseResult,
+  type SpecParsedFile,
+  type SpecParsedEdge,
+  type UnresolvedImportRow,
+  type SpecEdgeKind,
 } from "./types.ts";
 import type { Role } from "../roles.ts";
 import type { AdapterFile } from "./adapters/types.ts";
@@ -178,6 +185,281 @@ export function parseSelection({ root, walk }: Selection): ParseResult {
       routes: { omitted: conventions.omitted, withheld: conventions.withheld },
     },
     configs: resolver.configs(),
+  };
+}
+
+/**
+ * Parse a codebase into spec-compliant format (phase-03).
+ * Validates rootDir, scans files with ts-morph, resolves imports,
+ * and collects insights for unresolved imports, parse errors, and dynamic specifiers.
+ */
+
+export async function parseCodebase(options: ParserOptions): Promise<SpecParseResult> {
+  // Validate rootDir - must be a non-empty string
+  if (options.rootDir === undefined || options.rootDir === null) {
+    throw new Error("options.rootDir must be a non-empty string");
+  }
+  if (typeof options.rootDir !== "string") {
+    throw new Error("options.rootDir must be a string");
+  }
+  if (options.rootDir === "") {
+    throw new Error("options.rootDir must not be empty");
+  }
+
+  const root = path.resolve(options.rootDir);
+  const stat = statSync(root, { throwIfNoEntry: false });
+  if (!stat?.isDirectory()) {
+    throw new Error(`Not a directory: ${root}`);
+  }
+
+  // Validate maxFiles - must be non-negative integer or undefined
+  let maxFiles: number | undefined = options.maxFiles;
+  if (maxFiles !== undefined) {
+    if (maxFiles < 0) {
+      throw new Error("options.maxFiles must be non-negative");
+    }
+    // Floor non-integers
+    maxFiles = Math.floor(maxFiles);
+  }
+
+  // Explicit tsconfigPath: non-empty must exist; undefined/"" → discovery.
+  let tsconfigPath: string | undefined;
+  if (options.tsconfigPath !== undefined && options.tsconfigPath !== "") {
+    if (typeof options.tsconfigPath !== "string") {
+      throw new Error("options.tsconfigPath must be a string");
+    }
+    const resolvedTsconfig = path.resolve(options.tsconfigPath);
+    const tsconfigStat = statSync(resolvedTsconfig, { throwIfNoEntry: false });
+    if (!tsconfigStat?.isFile()) {
+      throw new Error(`tsconfig not found: ${resolvedTsconfig}`);
+    }
+    tsconfigPath = resolvedTsconfig;
+  }
+
+  // Walk the repository to collect candidate files.
+  const walk = walkRepository(root);
+
+  // Bound parse work: cap candidates before createSourceFile (0 → no files).
+  const candidates =
+    maxFiles === undefined ? walk.candidates : walk.candidates.slice(0, maxFiles);
+
+  // Create ts-morph Project for parsing
+  const project = new Project({
+    skipAddingFilesFromTsConfig: true,
+    skipFileDependencyResolution: true,
+    compilerOptions: { allowJs: true, noLib: true, noResolve: true, types: [] },
+  });
+
+  // Parse source files
+  const sourceFiles = candidates.map((candidate) => ({
+    candidate,
+    sourceFile: project.createSourceFile(candidate.absolutePath, candidate.content, { overwrite: true }),
+  }));
+
+  const program = project.getProgram();
+  const skipped: SkippedFile[] = [...walk.skipped];
+  const parsed: typeof sourceFiles = [];
+  const insights: ParserInsight[] = [];
+
+  // Filter files, collecting syntax errors as insights
+  for (const entry of sourceFiles) {
+    const [first, ...rest] = program.getSyntacticDiagnostics(entry.sourceFile);
+    if (!first) {
+      parsed.push(entry);
+      continue;
+    }
+    // Syntax error: add insight and skip file
+    const message = ts.flattenDiagnosticMessageText(first.compilerObject.messageText, " ");
+    const lineNumber = first.getLineNumber() ?? undefined;
+    insights.push({
+      category: "PARSE_ERROR",
+      severity: "error",
+      sourceFile: entry.candidate.path,
+      lineNumber,
+      title: "Parse Error",
+      description: `Syntax error: ${message}`,
+      metadata: {
+        reason: "syntax-error",
+        message,
+        additionalDiagnostics: rest.length,
+      },
+    });
+    skipped.push({
+      path: entry.candidate.path,
+      reason: "syntax-error",
+      detail: `line ${lineNumber ?? "?"}: ${message}${rest.length ? ` (+${rest.length} more)` : ""}`,
+    });
+  }
+
+  // Create resolver. nodes includes the full walk candidate set so maxFiles
+  // (parse-only cap) does not make in-repo targets look like walk/resolver drift.
+  const resolver = createResolver({
+    root,
+    nodes: new Set(walk.candidates.map((c) => c.path)),
+    skipped: new Map(skipped.map((file) => [file.path, file])),
+    excludedDirectories: walk.excludedDirectories,
+    workspacePackages: walk.workspacePackages,
+    tsconfigPath,
+  });
+
+
+  // Extract imports and build edges
+  const unresolvedImports: UnresolvedImportRow[] = [];
+  const fileEdges = new Map<string, SpecParsedEdge[]>();
+
+  const collectImportedSymbols = (
+    sf: (typeof parsed)[number]["sourceFile"],
+    moduleSpecifier: string,
+    line: number,
+  ): string[] => {
+    const symbols: string[] = [];
+    for (const statement of sf.getStatements()) {
+      if (statement.getStartLineNumber() !== line) continue;
+      if (Node.isImportDeclaration(statement)) {
+        if (statement.getModuleSpecifierValue() !== moduleSpecifier) continue;
+        const clause = statement.getImportClause();
+        if (!clause) continue;
+        const def = clause.getDefaultImport();
+        if (def) symbols.push(def.getText());
+        for (const named of clause.getNamedImports()) {
+          const name = named.getName();
+          if (name) symbols.push(name);
+        }
+        const ns = clause.getNamespaceImport();
+        if (ns) symbols.push(ns.getText());
+      } else if (Node.isExportDeclaration(statement)) {
+        if (statement.getModuleSpecifierValue() !== moduleSpecifier) continue;
+        for (const named of statement.getNamedExports()) {
+          const name = named.getName();
+          if (name) symbols.push(name);
+        }
+      }
+    }
+    return symbols;
+  };
+
+  for (const { candidate, sourceFile } of parsed) {
+    const edges: SpecParsedEdge[] = [];
+
+    for (const found of extractImports(sourceFile)) {
+      const specifier = found.literal ? found.specifier : found.expression;
+      const outcome: ImportStatus = found.literal
+        ? resolver.resolve(candidate.absolutePath, found.specifier, found.kind)
+        : {
+            status: "unresolved",
+            reason: found.kind === "require" ? "non-literal-require" : "non-literal-dynamic-import",
+            detail: "the path is computed at runtime",
+          };
+
+      // Map edge kind: import→static_import, re-export→re_export, dynamic-import→dynamic_import, require→commonjs_require
+      const specEdgeKind: SpecEdgeKind =
+        found.kind === "import"
+          ? "static_import"
+          : found.kind === "re-export"
+            ? "re_export"
+            : found.kind === "dynamic-import"
+              ? "dynamic_import"
+              : "commonjs_require";
+
+      switch (outcome.status) {
+        case "internal": {
+          edges.push({
+            edgeType: specEdgeKind,
+            rawImportSpecifier: specifier,
+            resolvedPath: outcome.target,
+            isExternal: false,
+            importedSymbols: found.literal ? collectImportedSymbols(sourceFile, found.specifier, found.line) : [],
+          });
+          break;
+        }
+
+        case "unresolved": {
+          unresolvedImports.push({
+            sourceFile: candidate.path,
+            specifier,
+            errorReason: outcome.detail,
+            lineNumber: found.line,
+          });
+
+          // Fail-Loud: non-literal dynamic import() → DYNAMIC_SPECIFIER_UNRESOLVED;
+          // non-literal require and other unresolved → UNRESOLVED_IMPORT.
+          if (outcome.reason === "non-literal-dynamic-import") {
+            insights.push({
+              category: "DYNAMIC_SPECIFIER_UNRESOLVED",
+              severity: "warning",
+              sourceFile: candidate.path,
+              specifier,
+              lineNumber: found.line,
+              title: "Dynamic Specifier",
+              description: `Non-literal import path cannot be statically resolved: ${outcome.detail}`,
+              metadata: {
+                reason: outcome.reason,
+                expression: specifier,
+              },
+            });
+          } else {
+            insights.push({
+              category: "UNRESOLVED_IMPORT",
+              severity: "warning",
+              sourceFile: candidate.path,
+              specifier,
+              lineNumber: found.line,
+              title: "Unresolved Import",
+              description: `Cannot resolve "${specifier}": ${outcome.detail}`,
+              metadata: {
+                reason: outcome.reason,
+                detail: outcome.detail,
+              },
+            });
+          }
+          break;
+        }
+
+        case "external": {
+          // External imports: create edge with isExternal=true, resolvedPath=null
+          edges.push({
+            edgeType: specEdgeKind,
+            rawImportSpecifier: specifier,
+            resolvedPath: null,
+            isExternal: true,
+            importedSymbols: found.literal ? collectImportedSymbols(sourceFile, found.specifier, found.line) : [],
+          });
+          break;
+        }
+
+        case "excluded":
+          // Excluded imports do not produce edges
+          break;
+      }
+    }
+
+    fileEdges.set(candidate.path, edges);
+  }
+
+  // Build SpecParsedFile entries with collected metadata
+  let files: SpecParsedFile[] = parsed
+    .map(({ candidate, sourceFile }) => {
+      const ext = path.extname(candidate.path);
+      // Count AST nodes via full descendant walk (cheap on fixture-scale files)
+      const astNodeCount = 1 + sourceFile.getDescendants().length;
+      return {
+        relativePath: candidate.path,
+        extension: ext,
+        contentHash: candidate.hash,
+        sizeBytes: candidate.bytes,
+        lineCount: candidate.lines,
+        astNodeCount,
+        edges: fileEdges.get(candidate.path) ?? [],
+      };
+    })
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+
+  // maxFiles already bounded candidates before createSourceFile.
+
+  return {
+    files,
+    unresolvedImports,
+    insights,
   };
 }
 
